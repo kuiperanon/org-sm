@@ -29,19 +29,25 @@ type TopicInfo struct {
     Interval float64
 }
 
+func (t *ElemInfo) DueDate() (dueDate time.Time, err error) {
+	dueDate, err = t.TopicInfo.DueDate()
+    return
+}
+
 func (t *TopicInfo) DueDate() (dueDate time.Time, err error) {
     reviewInterval, err := time.ParseDuration(fmt.Sprintf("%dh", int(t.Interval) * 24))
     if err != nil {
         return
     }
     dueDate = t.LastReview.Add(reviewInterval)
-    return
+	fmt.Println("t.LastReview=", t.LastReview, ", reviewInterval=", reviewInterval)
+	return
 }
 
 // TODO implement content of the cards being stored too
 type ElemInfo struct {
     Uuid string
-    Priority int
+    Priority int// TODO why not float?
     AFactor float64 // TODO Topic only
     ElementType string
     CardId int
@@ -165,6 +171,7 @@ func GetLastReviewDate(uuid string) (date time.Time, err error) {
 	return
 }
 
+// Pass in 0 to lastReviewDate in order to search emacs for it.
 func FindElemInfo(uuid string) (elemInfo ElemInfo, exists bool, err error) {
 	// TODO Maybe I should make the ElemInfoCache expire. Possibly this requires being defined in the RequiresCacheUpdate function
     elemInfo, exists = ElemInfoCache[uuid]
@@ -215,14 +222,14 @@ func UpdateElemInfoCache(uuid string) (elemInfo ElemInfo, exists bool, err error
 		return
 	}
 
-	// Emacs is not the source of truth for lastReview. MWDB is the source truth for lastReview. However, this is useful in case that info is missing from MWDB.
-    elemInfo.TopicInfo.LastReview, err = GetLastReviewDate(uuid)
-    if err != nil {
-        fmt.Println("Could not parse a date at org element with uuid: ", uuid)
-        return
-    }
+	// Emacs is not the source of truth for TopicInfo. MWDB is the source truth for lastReview. However, this is useful in case that info is missing from MWDB.
+	elemInfo.TopicInfo.LastReview, err = GetLastReviewDate(uuid)
+	if err != nil {
+		fmt.Println("Could not parse a date at org element with uuid: ", uuid)
+		return
+	}
 
-    elemInfo.TopicInfo.Interval = 3.0 // TODO nocheckin : decide how to handle this
+	elemInfo.TopicInfo.Interval = 3.0 // TODO nocheckin : decide how to handle this
 
     elemInfo.Uuid = uuid
 
@@ -242,6 +249,10 @@ func (elemInfo *ElemInfo) RequiresCacheUpdate() bool {
     // needs update
     // TODO  use timestamps
     return false
+}
+
+func (ei ElemInfo) PersistInCache() {
+	ElemInfoCache[ei.Uuid] = ei
 }
 
 func (ei *ElemInfo) IsDismissed() bool {

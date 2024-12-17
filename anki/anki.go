@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"bytes"
 	"database/sql"
-	"log"
+	_ "log"
 )
 
 /*
@@ -262,15 +262,17 @@ func InReview() bool {
 }
 
 func DeleteCard(cardId int) error {
-	log.Fatal("anki.DeleteCurrentCard -- haven't tested if this works yet")
+	//log.Fatal("anki.DeleteCurrentCard -- haven't tested if this works yet")
 	// Get the note id
     resp, err := Request("cardsToNotes", map[string]interface{}{"cards": []int{cardId}})
     if err != nil {
         fmt.Printf("error in sending `cardsToNotes` request\n")
         return err
     }
+	fmt.Println("Deleting card: ", resp.Result, ", cardId was=", cardId)
+
     for _, noteId := range resp.Result.([]interface{}) {
-		resp, err := Request("deleteNotes", map[string]interface{}{"notes": []int{noteId.(int)}})
+		resp, err := Request("deleteNotes", map[string]interface{}{"notes": []int{int(noteId.(float64))}})
 		if err != nil {
 			fmt.Printf("error in sending request: deleteNotes\n")
 			return err
@@ -496,7 +498,9 @@ func FindElemInfoWithCardId(cardId int) (elemInfo emacs.ElemInfo, elemExists boo
             return
         }
     }
-    return emacs.FindElemInfo(uuid)
+    elemInfo, elemExists, err = emacs.FindElemInfo(uuid)
+	elemInfo.CardId = cardId
+	return
 }
 
 func FindCard(uuid string) (cardId int, exists bool, err error) {
@@ -520,11 +524,12 @@ func FindCard(uuid string) (cardId int, exists bool, err error) {
     }
 }
 
-func CurrentElemInfo() (ei emacs.ElemInfo, err error) {
+// TODO nocheckin : Can I delete this function? Does it do anything important?
+func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
 	// Start review if unstarted
 	if err := StartReview(); err != nil {
 		err = fmt.Errorf("error in starting review: %v", err)
-		return ei, err
+		return ei, false, err
 	}
 
 	resp, err := Request("guiCurrentCard", map[string]interface{}{})
@@ -533,20 +538,23 @@ func CurrentElemInfo() (ei emacs.ElemInfo, err error) {
 	}
 	//fmt.Println("nocheckin CurrentElemenInfo: ", resp.Result)
 
+	if resp.Result == nil {
+		return ei, false, nil
+	}
 	m := resp.Result.(map[string]interface{})
 	noExistErr := fmt.Errorf("Invalid guiCurrentCard response: %v", resp.Result)
     deckName, exists := m["deckName"]
 	if !exists {
-		return ei, noExistErr
+		return ei, false, noExistErr
 	}
 	if deckName != MainDeck {
 		ankiState = AnkiStateNotReview
-		return ei, fmt.Errorf("Anki is in review for wrong deck, current deck is %s", deckName)
+		return ei, false, fmt.Errorf("Anki is in review for wrong deck, current deck is %s", deckName)
 	}
     cardIdF, exists := m["cardId"]
 	cardId := int(cardIdF.(float64))
 	if !exists {
-		return ei, noExistErr
+		return ei, false, noExistErr
 	}
 
 	fmt.Println("nocheckin Finding elemInfoWithCardId: cardId= ", cardId)
@@ -555,7 +563,9 @@ func CurrentElemInfo() (ei emacs.ElemInfo, err error) {
 		return
 	}
 	if !elemExists {
-		return ei, fmt.Errorf("Element does not exist for cardId: %v", cardId)
+		//return ei, true, fmt.Errorf("Element does not exist for cardId: %v", cardId)
+		deckEmpty = true
+		return ei, deckEmpty, nil
 	}
 
 	fmt.Println("callin' guiShowAnswer")
@@ -572,19 +582,20 @@ func CurrentElemInfo() (ei emacs.ElemInfo, err error) {
 	//fmt.Println("nocheckin : ", response)
 
 	// TODO nocheckin delete this after quick test!
+	// deckEmpty = true // nocheckin deckEmpty
 	return
 }
 
-func SetGrade(grade int) error {
+func SetGrade(grade int) (ok bool, err error) {
 	fmt.Println("SetGrade: ", grade)
 	resp, err := Request("guiAnswerCard", map[string]interface{}{"ease": grade})
 	if err != nil {
 		err = fmt.Errorf("error in sending `guiAnswerCard` request")
-		return err
+		return false, err
 	}
 	fmt.Println("nocheckin SetGrade: ", resp.Result)
 	//if len(resp.Result.([]interface {})) != 1 {
 	//    return -1, false, nil
 	//}
-	return nil
+	return resp.Result.(bool), nil
 }
