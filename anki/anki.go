@@ -160,7 +160,7 @@ type Response struct {
 
 // TODO perhaps may want to add the "content" as well
 func CreateCard(uuid string, content string) error {
-	_ = content // TODO implement content! :nocheckin
+	_ = content // TODO implement content. :nocheckin
     resp, err := Request("addNote", map[string]interface{}{
         "note": map[string]interface{}{
             "deckName": MainDeck,
@@ -261,29 +261,6 @@ func InReview() bool {
 	return ankiState == AnkiStateInReview
 }
 
-func DeleteCard(cardId int) error {
-	//log.Fatal("anki.DeleteCurrentCard -- haven't tested if this works yet")
-	// Get the note id
-    resp, err := Request("cardsToNotes", map[string]interface{}{"cards": []int{cardId}})
-    if err != nil {
-        fmt.Printf("error in sending `cardsToNotes` request\n")
-        return err
-    }
-	fmt.Println("Deleting card: ", resp.Result, ", cardId was=", cardId)
-
-    for _, noteId := range resp.Result.([]interface{}) {
-		resp, err := Request("deleteNotes", map[string]interface{}{"notes": []int{int(noteId.(float64))}})
-		if err != nil {
-			fmt.Printf("error in sending request: deleteNotes\n")
-			return err
-		}
-		fmt.Println("Deleted card: ", cardId, ", resp =", resp.Result)
-		break
-	}
-
-	return nil
-}
-
 func StartReview() error {
     if InReview() {
 		// Already in review.
@@ -349,32 +326,49 @@ func VerifyConnectionAndDb() error {
 }
 
 func DeleteEntriesWithUuids(uuids []string) error {
-    /*
-    TODO nocheckin complete this
-    For each
+    var cardIdsToDelete []int
+    
+    for _, uuid := range uuids {
+        cardId, exists, err := FindCard(uuid)
+        if err != nil {
+            err = fmt.Errorf("DeleteEntriesWithUuids: Error calling FindCard = %v", err)
+            return err
+        }
+        if !exists {
+            continue
+        }
+        cardIdsToDelete = append(cardIdsToDelete, cardId)
+    }
 
+    if err := DeleteCards(cardIdsToDelete); err != nil {
+        return fmt.Errorf("DeleteEntriesWithUuids: Error trying to delete cards with uuids %v and err = %v", uuids, err)
+    }
 
-maybe I can `or` a bunch of uuid tags
-    */
-
-    fmt.Println("TODO call3ed DeleteEntriesFromAnki- I still need to do this function!")
     return nil
 }
 
 
+func DeleteCard(cardId int) error {
+    return DeleteCards([]int{cardId})
+}
 func DeleteCards(cardIds []int) error {
     if len(cardIds) == 0 {
         return nil
     }
-	// TODO : consider what's below, but it may slow things down too much and may not be necessary. Seems to be the case that cardIds are the same as noteIds if there's only the typical number of cards made for the note.
+	// TODO : The conversion to notes below may not be necessary. Seems to be the case that cardIds are the same as noteIds if there's only the typical number of cards made for the note.
 
-    //var noteIds []int
-    //for _, x := range cardIds {
-    //
-    //}
-
-    resp, err := Request("deleteNotes", map[string]interface{}{
-        "notes": cardIds,
+    resp, err := Request("cardsToNotes", map[string]interface{}{"cards": cardIds})
+    if err != nil {
+        fmt.Printf("error in sending `cardsToNotes` request\n")
+        return err
+    }
+	fmt.Println("Deleting cards: ", resp.Result)
+    var noteIds []int
+    for _, noteId := range resp.Result.([]interface{}) {
+        noteIds = append(noteIds, int(noteId.(float64)))
+	}
+    resp, err = Request("deleteNotes", map[string]interface{}{
+        "notes": noteIds,
     })
     _ = resp
     if err != nil {
@@ -575,14 +569,6 @@ func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
 	}
 	fmt.Println("nocheckin", resp.Result)
 
-    //err = json.Unmarshal([]uint8(), &response)
-    //if err != nil {
-    //    return
-    //}
-	//fmt.Println("nocheckin : ", response)
-
-	// TODO nocheckin delete this after quick test!
-	// deckEmpty = true // nocheckin deckEmpty
 	return
 }
 

@@ -141,7 +141,7 @@ func UpdateAndSyncIfRequired() error {
 		return err
 	}
 	if didClean {
-		// Skip since we already did it today
+		// Skip since we already updated and synced today
 		//fmt.Println("nocheckin we already did a sync")
 		return nil
 	}
@@ -240,7 +240,7 @@ func VerifyAndCleanWithEmacs(uuidsEmacs []string) error {
             if elemInfo.IsItem() {
                 // TODO : Handle case where there already exists an Anki card... Currently it throws an error, because AnkiConnect returns an error message JSON referring to this being an invalid request due to it being a duplicate card
                 // Create missing card in Anki
-                if err = anki.CreateCard(elemInfo.Uuid, ""/*TODO nocheckin  , elemInfo.content*/); err != nil {
+                if err = anki.CreateCard(elemInfo.Uuid, ""/*TODO nocheckin  , elemInfo.content? */); err != nil {
 					err = fmt.Errorf("error from anki.CreateCard: %v", err)
                     return err
                 }
@@ -253,7 +253,7 @@ func VerifyAndCleanWithEmacs(uuidsEmacs []string) error {
             elemInfo.CardId = cardId
             if err != nil {
 				err = fmt.Errorf("Error from anki.FindCard: %v", err)
-				fmt.Println("nocheckin: ", err)
+				fmt.Println(err)
                 return err
             }
             if !cardExists {
@@ -314,14 +314,13 @@ func VerifyAndCleanWithAnki(uuidsEmacs []string) error {
             return err
         }
         var lastReview anki.Review
-		//fmt.Printf("prior: unmarshaling review: %s\n", reviewMarshalled) // TODO nocheckin [1021]
 
         for _, reviewMarshalled := range reviewsMarshalled.([]interface{}) {
 			reviewMap, ok := reviewMarshalled.(map[string]interface{})
 			if !ok {
 				return fmt.Errorf("unexpected type for reviewMarshalled: %T", reviewMarshalled)
 			}
-			fmt.Println("reviewMap=",reviewMap)
+			fmt.Println("Anki reviewMap=",reviewMap)
             var ankiReview anki.Review
 			ankiReview.ReviewTime = int(reviewMap["id"].(float64))
 			ankiReview.Usn = reviewMap["usn"]
@@ -347,17 +346,16 @@ func VerifyAndCleanWithAnki(uuidsEmacs []string) error {
     for cardId, lastReview := range lastReviews {
         elemInfo, exists, err := anki.FindElemInfoWithCardId(cardId)
 		if !exists {
-			// TODO nocheckin handle htis case!
+			// TODO nocheckin handle this case!
 			err = fmt.Errorf("error anki.FindElemInfoWithCardId(%d) does not exist!", cardId)
 			return err
 		}
         if err != nil {
             // TODO log this error! I don't know why these aren't being found
             // nocheckin
-            resp, err := anki.Request("cardsInfo", map[string]interface{}{"cards": []interface{}{cardId}})
-            if err != nil {
-                err = fmt.Errorf("error in sending `cardsInfo` anki.Request: %v", err)
-                return err
+            resp, err2 := anki.Request("cardsInfo", map[string]interface{}{"cards": []interface{}{cardId}})
+            if err2 != nil {
+                return fmt.Errorf("error in sending `cardsInfo` anki.Request: %v", err2)
             }
             fmt.Println(resp.Result)
 
@@ -516,22 +514,6 @@ func UpdateOrInsertWithElemInfo(elemInfo emacs.ElemInfo, updateTopicInfo bool) e
 	return nil
 }
 
-func UpdateOrInsertElementDbEntry(uuid string, elementType string, lastReview time.Time, interval float64, status int) error {
-	log.Fatal("This function is currently not being used anywhere, right?")//nocheckin
-	// Prepare the insert or replace statement
-	insertStatement := `
-	INSERT OR REPLACE INTO Element (uuid, elementType, lastReview, interval, status)
-	VALUES (?, ?, ?, ?, ?);`
-
-	// Execute the insert or replace statement
-	_, err := middlewareDb.db.Exec(insertStatement, uuid, elementType, lastReview.Format("2006-01-02 15:04:05"), interval, status)
-	if err != nil {
-		return fmt.Errorf("error updating or inserting element: %v", err)
-	}
-
-	return nil
-}
-
 func UpdateLearningQueue() (err error) {
 	learningQueueMutex.Lock()
 	defer learningQueueMutex.Unlock()
@@ -558,7 +540,9 @@ func FindDueElements() (elemInfos []emacs.ElemInfo, err error) {
             fmt.Println("error: ", err)
             return
         }
-
+		if ei.IsDismissed() {
+			continue
+		}
 		elemInfos = append(elemInfos, ei)
 		fmt.Println("Found card: ", ei)
     }
@@ -673,7 +657,6 @@ func FindDueTopics() (elemInfos []emacs.ElemInfo, err error) {
     return
 }
 
-// TODO nocheckin :: We're going to get rid of this function and figure out a different way to handle updating the learningQueue. Every time we pop from an item, we're going to read again from Anki, and then update the learningQueue. We're going to update the learningQueue every time we do a next-repetition
 func CurrentElement() (ei emacs.ElemInfo, err error) {
 	ei = LearningQueue()[0]
 	if ei.IsTopic() {

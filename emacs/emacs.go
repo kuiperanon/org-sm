@@ -181,8 +181,9 @@ func FindElemInfo(uuid string) (elemInfo ElemInfo, exists bool, err error) {
 	return
 }
 
+// Grabs information of element from emacs and stores that information in the corresponding elemInfo in the elemInfo cache.
+//  NOTE: This gives default values for the TopicInfo, which is to be correctly set elsewhere in the code, by middlewareDb.
 func UpdateElemInfoCache(uuid string) (elemInfo ElemInfo, exists bool, err error) {
-    // TODO nocheckin : I need to also check if the emacs uuids are dismissed, or DONE!
     priorityString, useDefault, exists, err := GetPropertyString(uuid, "SM_PRIORITY")
     if err != nil || !exists {
         return
@@ -256,7 +257,7 @@ func (ei ElemInfo) PersistInCache() {
 }
 
 func (ei *ElemInfo) IsDismissed() bool {
-    return ei.Status == StatusDisabled // TODO nocheckin use an enum for this or constant
+    return ei.Status == StatusDisabled
 }
 
 func (ei *ElemInfo) IsTopic() bool {

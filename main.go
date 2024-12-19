@@ -33,6 +33,10 @@ type PayloadSetGrade struct {
     Grade int `json:"grade"`
 }
 
+type PayloadDismiss struct {
+    Uuid string `json:"uuid"`
+}
+
 type PayloadSetPriority struct {
 	Uuid     string  `json:"uuid"`
     Priority float64 `json:"priority"`
@@ -45,12 +49,8 @@ type PayloadNewItem struct {
 type PayloadNewTopic struct {
     Uuid string `json:"uuid"`
     Priority float64 `json:"priority"`
+    AFactor float64 `json:"afactor"`
 }
-
-// nocheckin - notes:
-// Now I need to cache the results from emacs and have an emacs server.
-// I need to get the Priority from emacs. I'll have a default A-factor of 1.2.
-// I need a database for topic reviews and stuff.... This all should be in its own server perhaps, then.
 
 func main() {
 
@@ -94,6 +94,10 @@ func main() {
             mux.HandleFunc(pattern, handler)
             handlers[pattern] = handler
         }
+        register("/ping", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Println("\n/ping")
+			w.Write([]byte("{\"result\":\"true\"}"))
+        })
         register("/dbg-duedate/{id}", func(w http.ResponseWriter, r *http.Request) {
 			elemInfo, elemExists, err := emacs.FindElemInfo(r.PathValue("id"))
 			fmt.Println("duedate ei: ", elemInfo)
@@ -120,13 +124,6 @@ func main() {
 			fmt.Println(ei, ", ", err)
             w.Write([]byte("{\"result\":\"true\"}"))
 		})
-        register("/dbg-initialize-for-testing", func(w http.ResponseWriter, r *http.Request) {
-			_ = anki.VerifyConnectionAndDb()
-			res := anki.DebugUuidCacheDb()
-			fmt.Println("res === ", res)
-
-            w.Write([]byte("{\"result\":\"true\"}"))
-		})
         register("/dbg-showpq", func(w http.ResponseWriter, r *http.Request) {
 			/*
 			   What this will do:
@@ -139,30 +136,7 @@ func main() {
 			fmt.Println("LQ: ", middlewareDb.LearningQueue())
             w.Write([]byte("{\"result\":\"true\"}"))
 		})
-        register("/dbg-fluff", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("\n/dbg-fluff -- Enabling HeartBeat")
-            _, _, err := anki.FindCard("0bc05bcf-cf9f-4e11-8d75-0adc4e1ec911")
-            if err != nil {
-				err = fmt.Errorf("Error from anki.FindCard: %v", err)
-				fmt.Println("nocheckin: ", err)
-            }
-			// TODO nocheckin delete
-			//ei, _, err := anki.CurrentElemInfo()
-			//fmt.Println(ei, ", ", err)
-            w.Write([]byte("{\"result\":\"true\"}"))
-		})
         register("/set-priority", func(w http.ResponseWriter, r *http.Request) {
-			/*
-			   TODO nocheckin:
-
-			   WAIT A MINUTE, this only matters for the next day.
-			   when the learningQueue is built.
-			   It doesn't even get saved in the middlewareDb SQL database.
-
-			   All I need to do is update the elemInfoCache here. No need to update the database
-
-			   So you can delete this
-			   */
 			fmt.Println("\n/set-priority TODO !!!")
             body, err := io.ReadAll(r.Body)
             if err != nil {
@@ -184,7 +158,7 @@ func main() {
 			if !elemExists {
 				log.Fatal("Called set-priority for uuid that doesn't exist in MIDDLEWAREDB. uid=", payload)
 			}
-			elemInfo.Priority = int(payload.Priority) // TODO nocheckin: confirm this is within a valid range
+			elemInfo.Priority = int(payload.Priority) // TODO: confirm this is within a valid range?
 			fmt.Println("Setting priority: new ei= ", elemInfo)
 			if err := middlewareDb.UpdateOrInsertWithElemInfo(elemInfo, false); err != nil {
 				err = fmt.Errorf("error from UpdateOrInsertWithElemInfo: %v", err)
@@ -198,7 +172,7 @@ func main() {
             body, err := io.ReadAll(r.Body)
             if err != nil {
                 http.Error(w, "Unable to read body", http.StatusBadRequest)
-                return // TODO why do i stop the server here? not robust
+                return // TODO why do i stop the server here? not robust?
             }
             defer r.Body.Close()
             var payload PayloadSetGrade
@@ -211,12 +185,10 @@ func main() {
                 http.Error(w, "Error with answering grade", http.StatusBadRequest)
 				log.Fatal("error in SetGrade(): ", err)
 			}
-			currentWasGraded = true //nocheckin: Ignore the ok?
 			if ok {
-				// TODO nocheckin : Investigate how this behavior works. It seems to work even if ok is false
-				// For some reason, this SEEMS to be working.
 				currentWasGraded = true
 			} else {
+                currentWasGraded = true //nocheckin: Ignore the ok for now? It seems to work even when ok is false. TODO: Investigate.
 				//fmt.Println("Grading failed?")
 			}
             w.Write([]byte("{\"result\":\"true\"}"))
@@ -244,6 +216,7 @@ func main() {
 				"\"ElementStatus\":\"" + elementStatusS + "\"," +
 				"\"Priority\":\"" + priorityS + "\"," +
 				"\"AFactor\":\"" + afactorS + "\"," +
+				"\"Uuid\":\"" + ei.Uuid + "\"," +
 				"\"Title\":\"" + "TODO" + "\"," +
 				"\"Answer\":\"" + "TODO" + "\"" +
 				"}"))
@@ -272,50 +245,47 @@ func main() {
 				middlewareDb.UpdateOrInsertWithElemInfo(ei, true)
 				ei.PersistInCache()
 			}
-			/*
-			   TODO nocheckin
-			   What all needs to be done here?
-
-			   If we're a topic, we need to update the AFactor for the topic and stuff and we need to pop the learning queue and move on.
-
-			   If we're an item, we need to add the grading and pop the learning queue and move on
-
-			   lastReview
-
-			*/
-			//
-            w.Write([]byte("{\"result\":\"true\"}"))
-        })
-        register("/next-element", func(w http.ResponseWriter, r *http.Request) {
-			ei, err := middlewareDb.CurrentElement()
-			if err != nil {
-				log.Fatal("Error in /next-element: ", err)
-			}
-			if ei.IsItem() {
-				fmt.Println("next-element has found an Item.")
-				//log.Fatal("next-element for Items not implemented yet")
-				// I don't need to do anythign here because CurrentElement will call anki's currentCard which handles the code for getting ready for grading
-			}
-			fmt.Println("\n/next-element")
-			// Does this even need to do anything?
             w.Write([]byte("{\"result\":\"true\"}"))
         })
         register("/dismiss", func(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("\n/dismiss")
-			ei, err := middlewareDb.CurrentElement()
+            body, err := io.ReadAll(r.Body)
+            if err != nil {
+                http.Error(w, "Unable to read body", http.StatusBadRequest)
+                return // TODO why do i stop the server here? not robust
+            }
+            defer r.Body.Close()
+            var payload PayloadDismiss
+            if err := json.Unmarshal(body, &payload); err != nil {
+                http.Error(w, "Unable to parse JSON", http.StatusBadRequest)
+                return
+            }
+			ei, elemExists, err := emacs.FindElemInfo(payload.Uuid)
+			fmt.Println("Trying to dismiss ei = ", ei)
 			if err != nil {
-				log.Fatal("Error in /dismiss (CurrentElement): ", err)
+				log.Fatal("Error in /dismiss (FindElemInfo): ", err)
+			}
+			if !elemExists {
+				fmt.Println("V elemInfo uuid = ", ei.Uuid)
+				log.Fatal("Tried to dismiss elem which doesn't exist in /dismiss: ", err)
 			}
 			fmt.Println("Dismissing element: ", ei)
 			ei.Status = emacs.StatusDisabled
 			middlewareDb.UpdateOrInsertWithElemInfo(ei, false)
 			ei.PersistInCache()
+
 			if ei.IsItem() {
 				if err := anki.DeleteCard(ei.CardId); err != nil {
 					log.Fatal("Fatal: Failed to delete anki card, with cardId=", ei.CardId)
 				}
 			}
-			middlewareDb.LearningQueuePopFront()
+
+			// TODO only do this if the element was in the learning queue???
+			err = middlewareDb.UpdateLearningQueue()
+			if err != nil {
+				err = fmt.Errorf("error from UpdateLearningQueue: %s", err.Error())
+				log.Fatal(err)
+			}
             w.Write([]byte("{\"result\":\"true\"}"))
         })
         register("/current-element-id", func(w http.ResponseWriter, r *http.Request) {
@@ -327,10 +297,6 @@ func main() {
 			uuid := ei.Uuid
             w.Write([]byte("{\"result\":\"org-sm-registered<" + uuid + ">\"}"))
         })
-        register("/ping", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("\n/ping")
-			w.Write([]byte("{\"result\":\"true\"}"))
-        })
         register("/was-graded", func(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("\n/was-graded ", currentWasGraded)
 			if currentWasGraded {
@@ -340,7 +306,7 @@ func main() {
 			}
         })
         register("/new-topic", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("\n/new-topic TODO !!!!!!")
+			fmt.Println("\n/new-topic ")
             body, err := io.ReadAll(r.Body)
             if err != nil {
                 http.Error(w, "Unable to read body", http.StatusBadRequest)
@@ -352,11 +318,21 @@ func main() {
                 http.Error(w, "Unable to parse JSON", http.StatusBadRequest)
                 return
             }
-			log.Fatal("unimplemented") // TODO nocheckin
+			var elemInfo emacs.ElemInfo
+			elemInfo.Uuid = payload.Uuid
+			elemInfo.Priority = int(payload.Priority)
+			elemInfo.AFactor = payload.AFactor
+			elemInfo.ElementType = ":topic"
+			elemInfo.Status = emacs.StatusEnabled
+			if err := middlewareDb.UpdateOrInsertWithElemInfo(elemInfo, false); err != nil {
+				err = fmt.Errorf("error from UpdateOrInsertWithElemInfo: %v", err)
+				log.Fatal(err)
+			}
+			elemInfo.PersistInCache()
             w.Write([]byte("{\"result\":\"true\"}"))
         })
         register("/new-item", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("\n/newitem TODO TEST THIS")
+			fmt.Println("\n/newitem ")
             body, err := io.ReadAll(r.Body)
             if err != nil {
                 http.Error(w, "Unable to read body", http.StatusBadRequest)
@@ -433,12 +409,6 @@ func main() {
 		err = fmt.Errorf("Error in HeartBeat: %v", err)
 		log.Fatal(err)
 	}
-
-    //nocheckin
-    //// Now we want to write our test.
-    //if err := middlewareDb.UpdateAndSyncIfRequired(); err != nil {
-    //    log.Fatal(err)
-    //}
 
     select {}
     done <- true
