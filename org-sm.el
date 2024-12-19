@@ -733,3 +733,61 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 ;(defun org-sm-quick-grade-3 () (org-sm-quick-grade 3))
 ;(defun org-sm-quick-grade-4 () (org-sm-quick-grade 4))
 ;(defun org-sm-quick-grade-5 () (org-sm-quick-grade 5))
+
+
+;;; Additional functions which are expected by the go server
+(defun org-get-property-value-by-id (id property-name)
+  "Retrieve the value of PROPERTY-NAME from the :PROPERTIES: drawer
+of an Org header with the specified ID."
+  (interactive "sEnter ID: \nsEnter property name: ")
+  (let ((marker (org-id-find id 'marker)))
+    (if marker
+        (with-current-buffer (marker-buffer marker)
+          (save-excursion
+            (goto-char marker)
+            (org-back-to-heading t)
+            (let ((value (org-entry-get nil property-name)))
+              (if value
+                  (message "%s" value)
+                (message "_p: Failed to find property")))))
+      (message "_I: Failed to ID %d" id))))
+
+(defun get-org-ids-with-tag-in-directory (directory tag &optional exclude)
+  "Return a list of Org IDs of headers containing TAG in files under DIRECTORY.
+If EXCLUDE is provided, entries with the EXCLUDE tag will be ignored."
+  (interactive "DDirectory to search in: \nsTag to search for: \nsExclude tag (optional): ")
+  (let ((org-id-list '()))
+    (mapc
+     (lambda (file)
+       (with-current-buffer (find-file-noselect file)
+         (save-excursion
+           (goto-char (point-min))
+           (while (re-search-forward (format "^\\*+.*:%s:" (regexp-quote tag)) nil t)
+             (let ((tags (org-get-tags)))
+               (unless (and exclude (member exclude tags))
+                 (push (org-id-get) org-id-list)))))))
+     (directory-files-recursively directory "\\.org$"))
+    org-id-list))
+
+(defun org-id-get-first-timestamp (org-id)
+  "Return the first timestamp in the org heading or its inner text for a
+    given ORG-ID."
+  (interactive "sOrg ID: ")
+  (let ((marker (org-id-find org-id 'marker))
+        timestamp formatted-timestamp)
+    (when marker
+      (with-current-buffer (marker-buffer marker)
+        (goto-char marker)
+        (save-excursion
+          (let ((end (save-excursion (outline-next-heading) (point))))
+            (while (and (not timestamp) (or (re-search-forward org-ts-regexp end t) (re-search-forward org-ts-regexp-both end t)))
+              (setq timestamp (match-string 0))))))
+      (if timestamp
+          (progn
+            (setq formatted-timestamp (format-time-string "%Y-%m-%d %H:%M:%S" (org-time-string-to-time timestamp)))
+            (message "First timestamp: %s" formatted-timestamp)
+            formatted-timestamp)
+        (message "No timestamp found for Org ID: %s" org-id)
+        nil))))
+
+
