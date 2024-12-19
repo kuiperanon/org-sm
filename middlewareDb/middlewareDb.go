@@ -76,6 +76,8 @@ func HeartBeat() error {
     }
     HeartBeatRunning = true
 
+    defer HeartBeatRunning = false
+
 	// Confirm the database exists for this software.
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -130,7 +132,6 @@ func HeartBeat() error {
 		return err
 	}
 
-    HeartBeatRunning = false
 	return nil
 }
 
