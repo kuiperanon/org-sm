@@ -92,7 +92,7 @@ func (r CommandResult) AsStrings() (result []string, err error) {
 		err = isNil
 		return
 	}
-	for _, v := range strings.Split(s[1:len(s)-2], " ") {
+	for _, v := range strings.Split(s[0:len(s)-2], " ") {
 		result = append(result, v)
 	}
 	return
@@ -135,6 +135,7 @@ func FindUuidsSorted() (sortedUuids []string, err error) {
 }
 
 func GetPropertyString(uuid string, property string) (result string, useDefault bool, elemExists bool, err error) {
+    // TODO nocheckin :: Let's just parse this within go code.
 	// Use emacs to get priority
 	stdoutBytes, err := Command("(org-get-property-value-by-id \"" + uuid + "\" \"" + property + "\")")
 	if err != nil {
@@ -156,6 +157,8 @@ func GetPropertyString(uuid string, property string) (result string, useDefault 
 }
 
 func GetLastReviewDate(uuid string) (date time.Time, err error) {
+    // TODO nocheckin :: Instead of this, let's just parse the org files ourselves!
+    // TODO What I'll do, is just find the ".org" file which contains the exact :ID: and thne I'm gonna grab the appropriate timestamp.
     stdoutBytes, err := Command("(org-id-get-first-timestamp \"" + uuid + "\")")
     if err != nil {
         return
@@ -243,6 +246,9 @@ func UpdateElemInfoCache(uuid string) (elemInfo ElemInfo, exists bool, err error
 func (ei *ElemInfo) UpdateTopicInfo() {
 	// This function is called whenever you complete a topic
 	ei.TopicInfo.Interval = ei.TopicInfo.Interval * ei.AFactor
+	if ei.TopicInfo.Interval < 0.5 { // TODO nocheckin :: This was an arbitrary decision--to avoid bugs where interval is 0
+		ei.TopicInfo.Interval = 0.5
+	}
 	ei.TopicInfo.LastReview = time.Now()
 }
 

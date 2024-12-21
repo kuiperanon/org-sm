@@ -674,8 +674,6 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
  :display 'org-sm-link)
 
 (add-hook 'org-after-todo-state-change-hook 'org-sm-node-maybe-dismiss-at-point 'append)
-(advice-add 'org-sm-goto-next :before #'org-sm-update-timestamp-and-maybe-restart-supermemo)
-(advice-add 'org-sm-goto-current :before #'org-sm-update-timestamp-and-maybe-restart-supermemo)
 (advice-add 'org-sm-goto-next :before #'org-sm-maybe-capture-buffer-finalize)
 (advice-add 'org-sm-node-goto-element-id-or-smimport :after #'org-narrow-to-subtree)
 ;(advice-add 'org-sm-node-goto-element-id-or-smimport :after #'outline-show-all)
