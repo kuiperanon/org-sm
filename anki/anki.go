@@ -1,9 +1,11 @@
 package anki
 
 import "middleware/emacs"
+import "middleware/elemInfo"
 
 import (
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +29,7 @@ const (
 )
 
 const (
-	maxRetries = 5
+	maxRetries = 8
     ankiConnectServerPort = 8765
     ankiConnectApiVersion = 6
     baseAnkiQuery = "deck:" + MainDeck + " tag:org-sm -tag:org-sm-skip"
@@ -39,6 +41,7 @@ var MainDeckId int
 var ankiState int
 
 var UuidCache     map[int]string // Maps Card ID to UUID
+var NoteIdCache   map[int]int    // Maps Card ID to Note ID
 var CardIdCache   map[string]int // Maps UUID to Card ID
 
 type UuidCacheDb struct {
@@ -52,6 +55,9 @@ var uuidCacheDb UuidCacheDb
 
 var uuidCacheDbInitialized bool
 
+// TODO nocheckin :: Make it so that all DELETES to anki must first do it to the Cache. Only read from Anki when it's missing from the Cache. We must assume that the Cache matches Anki for the UpdateAndSync stuff. We can confirm that the Cache contains all the CardIds from Anki, and if it doesn't then we can find the missing ones and add them to the Cache--this can be done during UpdateAndSync at the start of it.
+// nocheckin :: Call it AnkiCacheDb instead of UuidCacheDb
+
 // nocheckin just for debugging
 func DebugUuidCacheDb() bool {
 	return uuidCacheDb.has(1718483581717)
@@ -64,6 +70,7 @@ func (u *UuidCacheDb) Init() error {
         return err
 	}
 
+	// TODO nocheckin :: Delete this database, if it turns out its' fast enough to do without
 	UuidCacheDbPath = filepath.Join(homeDir, ".local", "share", "org-sm", "anki.db")
 	if err := os.MkdirAll(filepath.Dir(UuidCacheDbPath), os.ModePerm); err != nil {
         return err
@@ -107,20 +114,29 @@ func (u *UuidCacheDb) put(cardId int, uuid string) error {
     return err
 }
 
-func (u *UuidCacheDb) get(cardId int) (string, error) {
-    // Retrieve the uuid for the given cardId
-    querySQL := `SELECT uuid FROM UuidCache WHERE cardId = ?;`
+func (u *UuidCacheDb) PopulateUuidCache() error {
+	rows, err := u.db.Query("SELECT cardId, uuid FROM UuidCache;")
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    var uuid string
-    err := u.db.QueryRow(querySQL, cardId).Scan(&uuid)
-    if err != nil {
-        if err == sql.ErrNoRows {
-            return "", nil // No matching record found
-        }
-        return "", err // Some other error occurred
-    }
-    return uuid, nil
+	// Iterate through the rows
+	for rows.Next() {
+		var cardId int
+		var uuid string
+
+		err = rows.Scan(&cardId, &uuid)
+		if err != nil {
+			return err
+		}
+
+		// Fill the map
+		UuidCache[cardId] = uuid
+		CardIdCache[uuid] = cardId
+	}
+	return nil
 }
+
 
 func (u *UuidCacheDb) has(cardId int) bool {
     // Check if the cardId exists in the database
@@ -143,6 +159,7 @@ type Review struct {
 }
 
 func (r *Review) GetReviewTime() time.Time {
+	// TODO nocheckin :: Does this need to be used ever?
     if r.ReviewTime == 0 {
         return time.Now()
     }
@@ -181,11 +198,27 @@ func CreateCard(uuid string, content string) error {
             "tags": []string{"org-sm", "uuid-" + uuid},
         },
     })
-	_ = resp
     if err != nil {
         fmt.Printf("error in sending addNote request: %s\n", uuid)
         return err
     }
+	_ = resp
+
+	// Also insert cardId into the database
+	cardId, cardExists, err := FindCard(uuid)
+	if err != nil {
+		err = fmt.Errorf("Error from anki.FindCard: %v", err)
+		return err
+	}
+	if !cardExists {
+		err = fmt.Errorf("CreateCard: Created card but it doesn't exist right creating it. uuid = %s", uuid)
+		return err // No need to delete if card doesn't exist.
+	}
+	UuidCache[cardId] = uuid
+	err = uuidCacheDb.put(cardId, uuid)
+	if err != nil {
+		return err
+	}
 
     return nil
 }
@@ -325,49 +358,66 @@ func VerifyConnectionAndDb() error {
 	return nil
 }
 
-func DeleteEntriesWithUuids(uuids []string) error {
-    var cardIdsToDelete []int
-    
-    for _, uuid := range uuids {
-        cardId, exists, err := FindCard(uuid)
-        if err != nil {
-            err = fmt.Errorf("DeleteEntriesWithUuids: Error calling FindCard = %v", err)
-            return err
-        }
-        if !exists {
-            continue
-        }
-        cardIdsToDelete = append(cardIdsToDelete, cardId)
-    }
-
-    if err := DeleteCards(cardIdsToDelete); err != nil {
-        return fmt.Errorf("DeleteEntriesWithUuids: Error trying to delete cards with uuids %v and err = %v", uuids, err)
-    }
-
-    return nil
+func DeleteElemInfo(ei elemInfo.ElemInfo) error {
+	return DeleteCardWithUuid(ei.Uuid)
 }
 
+func DeleteCardWithUuid(uuid string) error {
+	cardId, cardExists, err := FindCard(uuid)
+	if err != nil {
+		err = fmt.Errorf("Error from anki.FindCard: %v", err)
+		return err
+	}
+	if !cardExists {
+		return nil // No need to delete if card doesn't exist.
+	}
+	return DeleteCard(cardId)
+}
 
 func DeleteCard(cardId int) error {
-    return DeleteCards([]int{cardId})
+	return DeleteCards([]int{cardId})
 }
+
+func CardsToNotes(cardIds []int) (noteIds []int, err error) {
+	var uncachedCardIds []int
+	for _, cardId := range cardIds {
+		noteId, exists := NoteIdCache[cardId]
+		if exists {
+			noteIds = append(noteIds, noteId)
+		} else {
+			uncachedCardIds = append(uncachedCardIds, cardId)
+		}
+	}
+	// Retrieve uncached cardIds from Anki to add to returned noteIds and cache
+	if len(uncachedCardIds) > 0 {
+		resp, err := Request("cardsToNotes", map[string]interface{}{"cards": uncachedCardIds})
+		if err != nil {
+			fmt.Printf("error in sending `cardsToNotes` request\n")
+			return noteIds, err
+		}
+		for idx, noteId_ := range resp.Result.([]interface{}) {
+			noteId := int(noteId_.(float64))
+			NoteIdCache[uncachedCardIds[idx]] = noteId
+			noteIds = append(noteIds, noteId)
+		}
+	}
+	return
+}
+
 func DeleteCards(cardIds []int) error {
+	// TODO nocheckin :: Make this remove from the AnkiCacheDb
     if len(cardIds) == 0 {
         return nil
     }
-	// TODO : The conversion to notes below may not be necessary. Seems to be the case that cardIds are the same as noteIds if there's only the typical number of cards made for the note.
 
-    resp, err := Request("cardsToNotes", map[string]interface{}{"cards": cardIds})
+    noteIds, err := CardsToNotes(cardIds)
     if err != nil {
-        fmt.Printf("error in sending `cardsToNotes` request\n")
+        fmt.Printf("error = %v\n", err)
         return err
     }
-	fmt.Println("Deleting cards: ", resp.Result)
-    var noteIds []int
-    for _, noteId := range resp.Result.([]interface{}) {
-        noteIds = append(noteIds, int(noteId.(float64)))
-	}
-    resp, err = Request("deleteNotes", map[string]interface{}{
+
+	fmt.Println("Deleting notes: ", noteIds)
+    resp, err := Request("deleteNotes", map[string]interface{}{
         "notes": noteIds,
     })
     _ = resp
@@ -379,7 +429,7 @@ func DeleteCards(cardIds []int) error {
     return nil
 }
 
-func FindCardIds() (cardIds []int, err error) {
+func FindCards() (cardIds []int, err error) {
     resp, err := Request("findCards", map[string]interface{}{"query": baseAnkiQuery})
     if err != nil {
         fmt.Printf("error in sending `findCards` request\n")
@@ -398,8 +448,10 @@ func FindCardIds() (cardIds []int, err error) {
     return
 }
 
-func FindDueCards(db *sql.DB) (cardIds []int, err error) {
-    resp, err := Request("findCards", map[string]interface{}{"query": baseAnkiQuery + " (is:due or is:new)"})
+func FindDueCards() (cardIds []int, err error) {
+	// TODO nocheckin ::
+    //resp, err := Request("findCards", map[string]interface{}{"query": baseAnkiQuery + " (is:due or is:new)"})
+    resp, err := Request("findCards", map[string]interface{}{"query": baseAnkiQuery + " is:due"})
     if err != nil {
         fmt.Printf("error in sending `FindDueCards` request\n")
         return []int{}, err
@@ -409,13 +461,8 @@ func FindDueCards(db *sql.DB) (cardIds []int, err error) {
     }
 
     cardIdsInterface := resp.Result.([]interface{})
-	MAX_CARDS := 100
-    cardIds = make([]int, min(MAX_CARDS, len(cardIdsInterface)))
-    //cardIdsMissingInCache := []int{}
+    cardIds = make([]int, len(cardIdsInterface))
     for i, v := range cardIdsInterface {
-		if i >= MAX_CARDS {
-			break
-		}
         cardId := int(v.(float64))
         cardIds[i] = cardId
     }
@@ -423,77 +470,61 @@ func FindDueCards(db *sql.DB) (cardIds []int, err error) {
     return
 }
 
-func UpdateCache(cardIds_ []int) error {
-	// Filter out the cardIds which are already in the database
-	var cardIds []int
-	for _, v := range cardIds_ {
-		if !uuidCacheDb.has(v) {
-			cardIds = append(cardIds, v)
-		} else {
-			uuid, err := uuidCacheDb.get(v)
-			if err != nil {
-				return err
-			}
-			UuidCache[v] = uuid
-		}
+func FindUuidFromCard(cardId int) (uuid string, err error) {
+	// TODO nocheckin :: we are assuming for now that cardId == noteId. (I will find out if this will cause problems or not)
+	uuid, exists := UuidCache[cardId]
+	if exists {
+		return uuid, nil
 	}
-    if len(cardIds) == 0 {
-        return nil
-    }
 
-    resp, err := Request("cardsToNotes", map[string]interface{}{"cards": cardIds})
+    noteIds, err := CardsToNotes([]int{cardId})
     if err != nil {
-        fmt.Printf("error in sending `cardsToNotes` request\n")
-        return err
+        fmt.Println(err)
+        return "", err
     }
-    for i, v := range resp.Result.([]interface{}) {
-		noteId := int(v.(float64))
-		noteTagsResp, err := Request("getNoteTags", map[string]interface{}{"note": noteId})
-		if err != nil {
-			fmt.Printf("error in sending request: getNoteTags\n")
-			return err
-		}
-		uuid := ""
-		fmt.Println("noteTagsResp = ", noteTagsResp)
-		for _, tag := range noteTagsResp.Result.([]interface{}) {
-			tag := tag.(string)
-			if (strings.HasPrefix(tag, "uuid-")) {
-				uuid = tag[len("uuid-"):]
-				break
-			}
-		}
-		if len(uuid) != 36 {
-			fmt.Printf("error: uuid should be 36 characters. uuid = %s\n", uuid)
-			err = fmt.Errorf("error: uuid should be 36 characters. uuid = %s\n", uuid)
-			return err
-		}
-		UuidCache[cardIds[i]] = uuid
-		if err := uuidCacheDb.put(cardIds[i], uuid); err != nil {
-			return fmt.Errorf("Failed to put--anki uuidCacheDb: %s\n", err.Error())
-		}
-
-		//_, err = emacs.FindElemInfo(uuid)
-		if err != nil {
-			return err
-		}
-		fmt.Println("Caching UUID from anki: noteId: ", noteId, ", response: ", uuid)
+	noteId := noteIds[0]
+	noteTagsResp, err := Request("getNoteTags", map[string]interface{}{"note": noteId})
+	if err != nil {
+		fmt.Printf("error in sending request: getNoteTags\n")
+		return "", err
 	}
-	return nil
+	//fmt.Println("noteTagsResp = ", noteTagsResp)
+	for _, tag := range noteTagsResp.Result.([]interface{}) {
+		tag := tag.(string)
+		if (strings.HasPrefix(tag, "uuid-")) {
+			uuid = tag[len("uuid-"):]
+			break
+		}
+	}
+	if len(uuid) != 36 {
+		fmt.Printf("error: uuid should be 36 characters. uuid = %s\n", uuid)
+		err = fmt.Errorf("error: uuid should be 36 characters. uuid = %s\n", uuid)
+		return "", err
+	}
+	UuidCache[cardId] = uuid
+	err = uuidCacheDb.put(cardId, uuid)
+	if err != nil {
+		return "", err
+	}
+	return uuid, nil
 }
 
-func FindElemInfoWithCardId(cardId int) (elemInfo emacs.ElemInfo, elemExists bool, err error) {
-	uuid, exists := UuidCache[cardId]
-	if !exists {
-        UpdateCache([]int{cardId})
-        uuid, exists = UuidCache[cardId]
-        if !exists {
-            err = fmt.Errorf("error: UUID could not be found for cardId: %d\n", cardId)
-            fmt.Println(err)
-            return
-        }
-    }
-    elemInfo, elemExists, err = emacs.FindElemInfo(uuid)
-	elemInfo.CardId = cardId
+func FindElemInfoWithCardId(cardId int) (ei elemInfo.ElemInfo, elemExists bool, err error) {
+	uuid, err := FindUuidFromCard(cardId)
+	if err != nil {
+		err = fmt.Errorf("error FindElemInfoWithCardId: err: %v\n", err)
+		fmt.Println(err)
+		return
+	}
+	ei, elemExists, err = emacs.FindElemInfo(uuid)
+	if err != nil {
+		err = fmt.Errorf("error FindElemInfoWithCardId: err: %v\n", err)
+		fmt.Println(err)
+		return
+	}
+	if !elemExists {
+		return ei, false, nil
+	}
 	return
 }
 
@@ -518,8 +549,7 @@ func FindCard(uuid string) (cardId int, exists bool, err error) {
     }
 }
 
-// TODO nocheckin : Can I delete this function? Does it do anything important?
-func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
+func CurrentElemInfo() (ei elemInfo.ElemInfo, deckEmpty bool, err error) {
 	// Start review if unstarted
 	if err := StartReview(); err != nil {
 		err = fmt.Errorf("error in starting review: %v", err)
@@ -530,7 +560,6 @@ func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
 	if err != nil {
 		return
 	}
-	//fmt.Println("nocheckin CurrentElemenInfo: ", resp.Result)
 
 	if resp.Result == nil {
 		return ei, false, nil
@@ -551,7 +580,6 @@ func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
 		return ei, false, noExistErr
 	}
 
-	fmt.Println("nocheckin Finding elemInfoWithCardId: cardId= ", cardId)
 	ei, elemExists, err := FindElemInfoWithCardId(cardId)
 	if err != nil {
 		return
@@ -562,12 +590,10 @@ func CurrentElemInfo() (ei emacs.ElemInfo, deckEmpty bool, err error) {
 		return ei, deckEmpty, nil
 	}
 
-	fmt.Println("callin' guiShowAnswer")
 	resp, err = Request("guiShowAnswer", map[string]interface{}{})
 	if err != nil {
 		return
 	}
-	fmt.Println("nocheckin", resp.Result)
 
 	return
 }
@@ -584,4 +610,33 @@ func SetGrade(grade int) (ok bool, err error) {
 	//    return -1, false, nil
 	//}
 	return resp.Result.(bool), nil
+}
+
+func SyncCacheDbWithAnki() error {
+	// TODO nocheckin
+	// Populate UuidCache with data from the database
+	// Confirm that we match the cardIds in anki
+
+
+	log.Fatal("Unimplemented")
+
+	return nil
+}
+
+func UpdateCaches() error {
+    cardIds, err := FindCards()
+    if err != nil {
+        return err
+    }
+
+	// Update NoteIdCache
+	_, err = CardsToNotes(cardIds)
+	if err != nil {
+		return err
+	}
+
+	// Update UuidCache
+	uuidCacheDb.PopulateUuidCache()
+
+	return nil
 }

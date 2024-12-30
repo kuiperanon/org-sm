@@ -1,279 +1,196 @@
 package emacs
 
+import "middleware/elemInfo"
+
 import (
 	"fmt"
 	"strconv"
-	"os/exec"
 	"strings"
 	"sort"
 	"time"
+	"os"
+	"bufio"
+	"log"
+	"regexp"
+	"path/filepath"
 )
 
-const (
-    orgDirectory = "~/org/"
-)
+//const (
+//    orgDirectory = "~/org/"
+//)
 
-const (
-    StatusEnabled = 1
-    StatusDisabled = 2
-)
+var ElemInfoCache map[string]elemInfo.ElemInfo // Maps UUID to ElemInfo
 
-const (
-    ElementTypeTopic = ":topic"
-    ElementTypeItem = ":item"
-)
+func PullDataFromOrgFiles() error {
+	// Get the user's home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Println("Error getting home directory:", err)
+		return err
+	}
 
-// These are the part of the ElemInfo for which the source of truth comes from MWDB and these are only considered the source of truth (when they come from emacs) if they are missing in MWDB.
-type TopicInfo struct {
-    LastReview time.Time
-    Interval float64
+	// Define the org directory path
+	orgDir := filepath.Join(homeDir, "org")
+
+	// Walk through the org directory recursively
+	err = filepath.Walk(orgDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Println("Error walking directory:", err)
+			return err
+		}
+
+		// Check if it's a file and ends with ".org" extension
+		if !info.IsDir() && filepath.Ext(path) == ".org" {
+			// TODO nocheckin :: Ignore files that contain "~".
+			// TODO nocheckin :: Update your org-id-scanner utility so that it doesn't ignore the pdf folder
+			fmt.Println("Processing file:", path)
+			ProcessOrgFile(path) // TODO handle errors
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		fmt.Println("Error walking directory:", err)
+		return err
+	}
+	return nil
 }
 
-func (t *ElemInfo) DueDate() (dueDate time.Time, err error) {
-	dueDate, err = t.TopicInfo.DueDate()
+// Stores the data from org file into ElemCache
+func ProcessOrgFile(filePath string) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		fmt.Println("Error opening file:", err)
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	inPropertiesBlock := false
+	var properties map[string]string
+
+	// Regular expression to match property lines
+	propertyRegex := regexp.MustCompile(`^\s*:(\w+):\s*(.*)$`)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Check if the line matches the first condition
+		if strings.HasPrefix(line, "*") && strings.Contains(line, ":drill:") && !strings.Contains(line, ":dismissed:") {
+
+			// Check the next line
+			if scanner.Scan() {
+				nextLine := strings.TrimSpace(scanner.Text())
+
+				// Skip if the next line contains DEADLINE: or SCHEDULED:
+				if strings.Contains(nextLine, "DEADLINE:") || strings.Contains(nextLine, "SCHEDULED:") {
+					continue
+				}
+
+				// Check if the next line starts with :PROPERTIES:
+				if strings.HasPrefix(nextLine, ":PROPERTIES:") {
+					inPropertiesBlock = true
+					properties = make(map[string]string) // Initialize properties map
+					continue
+				}
+			}
+		}
+
+		// Collect properties if in the properties block
+		if inPropertiesBlock {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, ":END:") {
+				inPropertiesBlock = false
+				// Process collected properties here
+				fmt.Println("Properties:")
+
+				// Update the ElemInfoCache with the new ElemInfo
+				ei := elemInfo.Default()
+				for key, value := range properties {
+					var err error
+					if key == "ID" {
+						ei.Uuid = value
+					} else if key == "SM_PRIORITY" {
+						var priority float64
+						priority, err = strconv.ParseFloat(value, 64)
+						ei.Priority = int(priority)
+					} else if key == "SM_A_FACTOR" {
+						ei.AFactor, err = strconv.ParseFloat(value, 64)
+					} else if key == "SM_ELEMENT_TYPE" {
+						ei.ElementType = value
+						if !ei.IsElementTypeValid() {
+							err = fmt.Errorf("Invalid elementType = %s\n", ei.ElementType)
+						}
+					} else if key == "SM_ELEMENT_TYPE" {
+						ei.ElementType = value
+					} else if key == "SM_LAST_REVIEW" {
+						value = value[1:len(value)-1]
+						ei.TopicInfo.LastReview, err = time.Parse("2006-01-02 Mon 15:04", value)
+					} else if key == "SM_INTERVAL" {
+						ei.TopicInfo.Interval, err = strconv.ParseFloat(value, 64)
+					}
+					if err != nil {
+						log.Fatal("error in org file parsing ", key, " with uuid: ", ei.Uuid, ", error =", err.Error())
+					}
+					fmt.Printf("'%s': '%s'\n", key, value)
+				}
+				if len(ei.Uuid) != 0 {
+					Persist(ei)
+				}
+				properties = nil // Clear for the next block
+			} else {
+				// Extract key and value from property line
+				match := propertyRegex.FindStringSubmatch(line)
+				if len(match) == 3 {
+					key := strings.Trim(match[1], ":") // Remove leading colon from key
+					properties[key] = strings.TrimSpace(match[2])
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading file:", err)
+	}
+}
+
+func FindUuidsSorted() (uuids []string) {
+	// Pull the uuids from the ElemInfoCache
+	for uuid, _ := range ElemInfoCache {
+		uuids = append(uuids, uuid)
+	}
+	sort.Strings(uuids)
     return
 }
 
-func (t *TopicInfo) DueDate() (dueDate time.Time, err error) {
-    reviewInterval, err := time.ParseDuration(fmt.Sprintf("%dh", int(t.Interval) * 24))
-    if err != nil {
-        return
-    }
-    dueDate = t.LastReview.Add(reviewInterval)
-	fmt.Println("t.LastReview=", t.LastReview, ", reviewInterval=", reviewInterval)
-	return
-}
-
-// TODO implement content of the cards being stored too
-type ElemInfo struct {
-    Uuid string
-    Priority int// TODO why not float?
-    AFactor float64 // TODO Topic only
-    ElementType string
-    CardId int
-    TopicInfo TopicInfo // Only set if topic
-    Status int // 1 means "Dismissed"
-}
-
-var ElemInfoCache map[string]ElemInfo // Maps UUID to ElemInfo
-
-type NilError struct {}
-
-func (e NilError) Error() string {
-	return "Result was nil"
-}
-
-type CommandResult []byte
-
-func Command(lisp string) (CommandResult, error) {
-    cmd := exec.Command("emacsclient", "-e", lisp)
-	stdout, err := cmd.Output()
-	if string(stdout) == "nil" {
-		err = NilError{}
-	}
-	if err != nil {
-		err = fmt.Errorf(".emacs Error executing lisp: `%s`.  Error: %v", lisp, err)
-	}
-	return stdout, err
-}
-
-func (r CommandResult) AsString() (string, error) {
-	output := string(r)
-	if output == "nil" {
-		return "", NilError{}
-	}
-	s := string(output)
-	return s[1:len(s)-2], nil
-}
-
-func (r CommandResult) AsStrings() (result []string, err error) {
-    s, isNil := r.AsString()
-	if isNil != nil {
-		err = isNil
-		return
-	}
-	for _, v := range strings.Split(s[0:len(s)-2], " ") {
-		result = append(result, v)
-	}
-	return
-}
-
-func FindUuidsSorted() (sortedUuids []string, err error) {
-    result, err := Command("(get-org-ids-with-tag-in-directory \"" + orgDirectory + "\" \"drill\" \"dismissed\")")
-    if err != nil {
-        err = fmt.Errorf("emacs.FindUuidsSorted: Error executing `get-org-ids-with-tag-in-directory` using emacsclient: %s", err.Error())
-        return
-    }
-
-    uuids, isNil := result.AsStrings()
-	if isNil != nil {
-		err = isNil
-		return
-	}
-
-    for _, v := range uuids {
-        if v != "nil" && v != "n" {
-			fmt.Println("nocheckin FindUuidsSorted: ", v)
-            uuid := v[1:len(v)-1]
-            sortedUuids = append(sortedUuids, uuid)
-
-            // Now confirm the uuid is valid
-            stdout, err := Command("(org-id-find \"" + uuid + "\" 'marker)")
-			_ = stdout
-            if err != nil {
-                err := fmt.Errorf("error in emacs.FindUuidsSorted: %s", err.Error())
-                return sortedUuids, err
-            }
-
-        }
-    }
-
-    fmt.Println("Sorting Uuids from Emacs")
-    sort.Strings(sortedUuids)
-
-    return
-}
-
-func GetPropertyString(uuid string, property string) (result string, useDefault bool, elemExists bool, err error) {
-    // TODO nocheckin :: Let's just parse this within go code.
-	// Use emacs to get priority
-	stdoutBytes, err := Command("(org-get-property-value-by-id \"" + uuid + "\" \"" + property + "\")")
-	if err != nil {
-		err = fmt.Errorf("Error executing `org-get-property-value-by-id` using emacsclient: %s", err.Error())
-		return
-	}
-	stdout := string(stdoutBytes)
-	if strings.HasPrefix(stdout, "\"_I") {
-		fmt.Println("WARNING: This UUID = %s is invalid.\n", uuid)
-		elemExists = false
-		return
-	} else if strings.HasPrefix(stdout, "\"_p") {
-		useDefault = true
-		return "", useDefault, true, nil
-	} else {
-		result = stdout[1:len(stdout)-2]
-		return result, false, true, nil
-	}
-}
-
-func GetLastReviewDate(uuid string) (date time.Time, err error) {
-    // TODO nocheckin :: Instead of this, let's just parse the org files ourselves!
-    // TODO What I'll do, is just find the ".org" file which contains the exact :ID: and thne I'm gonna grab the appropriate timestamp.
-    stdoutBytes, err := Command("(org-id-get-first-timestamp \"" + uuid + "\")")
-    if err != nil {
-        return
-    }
-    stdout := string(stdoutBytes)
-    stdout = stdout[1:len(stdout)-2]
-    if stdout[0] == 'i' {
-        err = fmt.Errorf("`org-id-get-first-timestamp` command resulted in nil for uuid: %s", uuid)
-		// TODO I may want to remove this since I return NillError in Command anyways, check to confirm that actually does as I expect.
-        return
-    }
-    date, err = time.Parse("2006-01-02 15:04:05", stdout)
-	return
-}
-
-// Pass in 0 to lastReviewDate in order to search emacs for it.
-func FindElemInfo(uuid string) (elemInfo ElemInfo, exists bool, err error) {
+func FindElemInfo(uuid string) (ei elemInfo.ElemInfo, exists bool, err error) {
 	// TODO Maybe I should make the ElemInfoCache expire. Possibly this requires being defined in the RequiresCacheUpdate function
-    elemInfo, exists = ElemInfoCache[uuid]
-    if !exists || elemInfo.RequiresCacheUpdate() {
-        elemInfo, exists, err = UpdateElemInfoCache(uuid)
-    }
+    ei, exists = ElemInfoCache[uuid]
+	if !exists {
+		err = PullDataFromOrgFiles()
+		if err != nil {
+			err = fmt.Errorf("Error in FindElemInfo w/ calling PullDataFromOrgFiles: err: ", err)
+			return
+		}
+
+		ei, exists = ElemInfoCache[uuid]
+		if !exists {
+			return
+		}
+	}
 	return
 }
 
-// Grabs information of element from emacs and stores that information in the corresponding elemInfo in the elemInfo cache.
-//  NOTE: This gives default values for the TopicInfo, which is to be correctly set elsewhere in the code, by middlewareDb.
-func UpdateElemInfoCache(uuid string) (elemInfo ElemInfo, exists bool, err error) {
-    priorityString, useDefault, exists, err := GetPropertyString(uuid, "SM_PRIORITY")
-    if err != nil || !exists {
-        return
-    } else if useDefault {
-        elemInfo.Priority = 66
-    } else {
-        priority, err := strconv.ParseFloat(priorityString, 64)
-        if err != nil {
-            fmt.Println("error with uuid: ", uuid, ", error =", err.Error())
-            return elemInfo, exists, err
-        }
-        elemInfo.Priority = int(priority)
-    }
-
-    afactorString, useDefault, exists, err := GetPropertyString(uuid, "SM_A_FACTOR")
-    if err != nil || !exists {
-        return
-    } else if useDefault {
-        elemInfo.AFactor = 1.2
-    } else {
-        elemInfo.AFactor, err = strconv.ParseFloat(afactorString, 64)
-        if err != nil {
-            fmt.Println("error with uuid: ", uuid, ", error =", err.Error())
-            return elemInfo, exists, err
-        }
-    }
-
-    elemInfo.ElementType, useDefault, exists, err = GetPropertyString(uuid, "SM_ELEMENT_TYPE")
-    if err != nil || !exists {
-        return
-    } else if useDefault {
-        err = fmt.Errorf("error: Emacs element (uuid=%s) missing elementType.\n", uuid)
-        return
-    }
-	if !elemInfo.IsElementTypeValid() {
-		err = fmt.Errorf("error: elementType for ID (%s) is invalid. elementType = %s\n", uuid, elemInfo.ElementType)
-		return
+func FindDueTopics() (dueTopics []elemInfo.ElemInfo) {
+	for _, ei := range ElemInfoCache {
+		if !ei.IsDismissed() && ei.IsTopic() && ei.IsDueToday() {
+			dueTopics = append(dueTopics, ei)
+		}
 	}
-
-	// Emacs is not the source of truth for TopicInfo. MWDB is the source truth for lastReview. However, this is useful in case that info is missing from MWDB.
-	elemInfo.TopicInfo.LastReview, err = GetLastReviewDate(uuid)
-	if err != nil {
-		fmt.Println("Could not parse a date at org element with uuid: ", uuid)
-		return
-	}
-
-	elemInfo.TopicInfo.Interval = 3.0 // TODO nocheckin : decide how to handle this
-
-    elemInfo.Uuid = uuid
-
-	elemInfo.Status = StatusEnabled // TODO nocheckin : do i need to check this with org/emacs, if the :dismissed tag is there?
-
-	ElemInfoCache[uuid] = elemInfo
-    return
+	return
 }
 
-func (ei *ElemInfo) UpdateTopicInfo() {
-	// This function is called whenever you complete a topic
-	ei.TopicInfo.Interval = ei.TopicInfo.Interval * ei.AFactor
-	if ei.TopicInfo.Interval < 0.5 { // TODO nocheckin :: This was an arbitrary decision--to avoid bugs where interval is 0
-		ei.TopicInfo.Interval = 0.5
-	}
-	ei.TopicInfo.LastReview = time.Now()
-}
-
-func (elemInfo *ElemInfo) RequiresCacheUpdate() bool {
-    // needs update
-    // TODO  use timestamps
-    return false
-}
-
-func (ei ElemInfo) PersistInCache() {
+func Persist(ei elemInfo.ElemInfo) {
 	ElemInfoCache[ei.Uuid] = ei
-}
-
-func (ei *ElemInfo) IsDismissed() bool {
-    return ei.Status == StatusDisabled
-}
-
-func (ei *ElemInfo) IsTopic() bool {
-    return ei.ElementType == ElementTypeTopic
-}
-
-func (ei *ElemInfo) IsItem() bool {
-    return ei.ElementType == ElementTypeItem
-}
-
-func (ei *ElemInfo) IsElementTypeValid() bool {
-    return ei.IsTopic() || ei.IsItem()
 }

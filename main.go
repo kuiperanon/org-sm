@@ -3,6 +3,7 @@ package main
 import "middleware/anki"
 import "middleware/emacs"
 import "middleware/middlewareDb"
+import "middleware/elemInfo"
 
 import (
 	"io"
@@ -57,7 +58,8 @@ func main() {
     rand.Seed(time.Now().UnixNano())
     anki.CardIdCache = make(map[string]int)
     anki.UuidCache   = make(map[int]string)
-    emacs.ElemInfoCache = make(map[string]emacs.ElemInfo)
+	anki.NoteIdCache = make(map[int]int)
+    emacs.ElemInfoCache = make(map[string]elemInfo.ElemInfo)
 
     ticker := time.NewTicker(5 * time.Second)
     defer ticker.Stop()
@@ -101,10 +103,6 @@ func main() {
         register("/dbg-duedate/{id}", func(w http.ResponseWriter, r *http.Request) {
 			elemInfo, elemExists, err := emacs.FindElemInfo(r.PathValue("id"))
 			fmt.Println("duedate ei: ", elemInfo)
-			if err != nil {
-				log.Fatal("dbg-duedate, err=", err)
-			}
-			err = middlewareDb.UpdateWithTopicInfo(&elemInfo)
 			if err != nil {
 				log.Fatal("dbg-duedate, err=", err)
 			}
@@ -160,10 +158,7 @@ func main() {
 			}
 			elemInfo.Priority = int(payload.Priority) // TODO: confirm this is within a valid range?
 			fmt.Println("Setting priority: new ei= ", elemInfo)
-			if err := middlewareDb.UpdateOrInsertWithElemInfo(elemInfo, false); err != nil {
-				err = fmt.Errorf("error from UpdateOrInsertWithElemInfo: %v", err)
-				log.Fatal(err)
-			}
+			middlewareDb.Persist(elemInfo)
 
             w.Write([]byte("{\"result\":\"true\"}"))
         })
@@ -240,10 +235,10 @@ func main() {
 			} else {
 				// Update the TopicInfo with new lastReview and interval information.
 				// We don't need to update this for items, because anki handles intervals.
-				ei.UpdateTopicInfo()
+				ei.UpdateTopicInfo() // TODO nocheckin :: Do I need to do this here? Because I do this in emacs as well
+				// emacs.ExportTopicInfo(ei) // Emacs will do this on its own
 				fmt.Println("Updated ei: ", ei)
-				middlewareDb.UpdateOrInsertWithElemInfo(ei, true)
-				ei.PersistInCache()
+				middlewareDb.Persist(ei)
 			}
             w.Write([]byte("{\"result\":\"true\"}"))
         })
@@ -270,17 +265,16 @@ func main() {
 				log.Fatal("Tried to dismiss elem which doesn't exist in /dismiss: ", err)
 			}
 			fmt.Println("Dismissing element: ", ei)
-			ei.Status = emacs.StatusDisabled
-			middlewareDb.UpdateOrInsertWithElemInfo(ei, false)
-			ei.PersistInCache()
+			ei.Status = elemInfo.StatusDisabled
+			middlewareDb.Persist(ei)
 
 			if ei.IsItem() {
-				if err := anki.DeleteCard(ei.CardId); err != nil {
-					log.Fatal("Fatal: Failed to delete anki card, with cardId=", ei.CardId)
+				if err := anki.DeleteElemInfo(ei); err != nil {
+					log.Fatal("Fatal: Failed to delete anki card, with uuid=", ei.Uuid)
 				}
 			}
 
-			// TODO only do this if the element was in the learning queue???
+			// TODO nocheckin :: only do this if the element was in the learning queue.
 			err = middlewareDb.UpdateLearningQueue()
 			if err != nil {
 				err = fmt.Errorf("error from UpdateLearningQueue: %s", err.Error())
@@ -318,17 +312,13 @@ func main() {
                 http.Error(w, "Unable to parse JSON", http.StatusBadRequest)
                 return
             }
-			var elemInfo emacs.ElemInfo
-			elemInfo.Uuid = payload.Uuid
-			elemInfo.Priority = int(payload.Priority)
-			elemInfo.AFactor = payload.AFactor
-			elemInfo.ElementType = ":topic"
-			elemInfo.Status = emacs.StatusEnabled
-			if err := middlewareDb.UpdateOrInsertWithElemInfo(elemInfo, false); err != nil {
-				err = fmt.Errorf("error from UpdateOrInsertWithElemInfo: %v", err)
-				log.Fatal(err)
-			}
-			elemInfo.PersistInCache()
+			ei := elemInfo.Default()
+			ei.Uuid = payload.Uuid
+			ei.Priority = int(payload.Priority)
+			ei.AFactor = payload.AFactor
+			ei.ElementType = ":topic"
+			ei.Status = elemInfo.StatusEnabled
+			middlewareDb.Persist(ei)
             w.Write([]byte("{\"result\":\"true\"}"))
         })
         register("/new-item", func(w http.ResponseWriter, r *http.Request) {
@@ -350,26 +340,22 @@ func main() {
 				log.Fatal("Fatal creating card: err=", err)
 			}
 
-			var elemInfo emacs.ElemInfo
-			elemInfo.Uuid = payload.Uuid
-			elemInfo.Priority = int(payload.Priority)
-			elemInfo.ElementType = ":item"
-			elemInfo.Status = emacs.StatusEnabled
-
 			// Confirm we can find the card from Anki. TODO nocheckin :: Confirm I think this is also to update the cache?
-			cardId, cardExists, err := anki.FindCard(payload.Uuid)
-			elemInfo.CardId = cardId
+			_, cardExists, err := anki.FindCard(payload.Uuid)
 			if err != nil {
 				log.Fatal("Fatal err=", err)
 			}
 			if !cardExists {
-				log.Fatal(fmt.Errorf("error: Could not find Anki card for uuid = %s\n", elemInfo.Uuid))
+				log.Fatal(fmt.Errorf("error: Could not find Anki card for uuid = %s\n", payload.Uuid))
 			}
-			if err := middlewareDb.UpdateOrInsertWithElemInfo(elemInfo, false); err != nil {
-				err = fmt.Errorf("error from UpdateOrInsertWithElemInfo: %v", err)
-				log.Fatal(err)
-			}
-			elemInfo.PersistInCache()
+
+			var ei elemInfo.ElemInfo
+			ei.Uuid = payload.Uuid
+			ei.Priority = int(payload.Priority)
+			ei.ElementType = ":item"
+			ei.Status = elemInfo.StatusEnabled
+
+			middlewareDb.Persist(ei)
             w.Write([]byte("{\"result\":\"true\"}"))
         })
 
@@ -396,12 +382,6 @@ func main() {
     }()
 
     time.Sleep(100 * time.Millisecond) // I need to loop over and over and then check for if new VerifyAndClean is required.
-
-    if err := middlewareDb.Init(); err != nil {
-        log.Fatal(err)
-    }
-
-    defer middlewareDb.Close()
 
 	// I should check if the program has ever started running before.
 	// NO I'll just use the database.

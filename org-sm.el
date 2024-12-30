@@ -563,14 +563,37 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 
 (defun org-sm-goto-next ()
   (interactive)
-  (if (and (not (org-sm-apiclient-graded-p)) ; This goes first, because it's faster.
-           (org-sm-apiclient-item-p))
-      (org-sm-node-answer)
-    ;; Otherwise, pop the learning queue and move to the next repetition.
-    (org-sm-apiclient-next-repetition)
-    (call-interactively 'org-sm-node-goto-element-id-or-smimport)
-    (evil--jumps-push)
-    (setq org-sm-node-current-id (org-roam-id-at-point)))) ; TODO Do I need to rely on org-roam?
+  (let ((itemp (org-sm-apiclient-item-p)))
+    (if (and itemp (not (org-sm-apiclient-graded-p))) ; This goes first, because it's faster.
+        (org-sm-node-answer)
+      (unless itemp (org-sm-update-interval-properties))
+      ;; Otherwise, pop the learning queue and move to the next repetition.
+      (org-sm-apiclient-next-repetition)
+      (call-interactively 'org-sm-node-goto-element-id-or-smimport)
+      (evil--jumps-push)
+      (setq org-sm-node-current-id (org-roam-id-at-point))))) ; TODO Do I need to rely on org-roam?
+
+(defun org-sm-update-interval-properties ()
+  "Update SM_LAST_REVIEW and SM_INTERVAL properties for the current org entry."
+  (interactive)
+  ;; Ensure the ID property is available
+  (let ((entry-id org-sm-node-current-id))
+    (when entry-id
+      (save-excursion
+        ;; Find the entry with the specified ID
+        (org-id-goto entry-id)
+        (let ((sm-a-factor (or (org-entry-get (point) "SM_A_FACTOR") "1.2"))
+              (sm-interval (org-entry-get (point) "SM_INTERVAL"))
+              (today (format-time-string "[%Y-%m-%d %a %H:%M]")))
+          (when (and sm-a-factor sm-interval)
+            ;; Update SM_LAST_REVIEW with today's date
+            (org-entry-put (point) "SM_LAST_REVIEW" today)
+            ;; Calculate new interval
+            (let* ((a-factor (string-to-number sm-a-factor))
+                   (interval (string-to-number sm-interval))
+                   (new-interval (* interval a-factor)))
+              ;; Update SM_INTERVAL
+              (org-entry-put (point) "SM_INTERVAL" (number-to-string new-interval)))))))))
 
 (defun org-sm-read-point-goto ()
   (interactive)
@@ -708,14 +731,26 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 ;(global-set-key (kbd "C-c X") 'org-sm-node-convert-and-export-at-point-at-point) ; TODO this is just fo rtesting, change key sym later
 
 (define-key evil-visual-state-map (kbd "SPC s x") 'org-sm-node-extract)
+(define-key evil-visual-state-map (kbd "C-c s x") 'org-sm-node-extract)
 (define-key evil-visual-state-map (kbd "SPC s z") 'org-sm-node-generate-cloze)
+(define-key evil-visual-state-map (kbd "C-c s z") 'org-sm-node-generate-cloze)
 (define-key evil-normal-state-map (kbd "SPC s c") 'org-sm-goto-current)
+(define-key evil-normal-state-map (kbd "C-c s c") 'org-sm-goto-current)
 (define-key evil-normal-state-map (kbd "SPC s e") 'org-sm-node-export-at-point-interactive)
+(define-key evil-normal-state-map (kbd "C-c s e") 'org-sm-node-export-at-point-interactive)
 (define-key evil-normal-state-map (kbd "SPC s g") 'org-sm-read-point-goto)
+(define-key evil-normal-state-map (kbd "C-c s g") 'org-sm-read-point-goto)
 (define-key evil-normal-state-map (kbd "SPC s m") 'org-sm-read-point-set)
+(define-key evil-normal-state-map (kbd "C-c s m") 'org-sm-read-point-set)
 (define-key evil-normal-state-map (kbd "SPC s p") 'org-sm-node-set-priority-at-point)
+(define-key evil-normal-state-map (kbd "C-c s p") 'org-sm-node-set-priority-at-point)
+
 (define-key evil-normal-state-map (kbd "SPC s r") 'org-sm-node-postpone)
+(define-key evil-normal-state-map (kbd "C-c s r") 'org-sm-node-postpone)
 (define-key evil-normal-state-map (kbd "SPC s n") 'org-sm-goto-next)
+(define-key evil-normal-state-map (kbd "C-c s n") 'org-sm-goto-next)
+(define-key evil-normal-state-map (kbd "SPC n") 'org-sm-goto-next)
+(define-key evil-normal-state-map (kbd "C-c n") 'org-sm-goto-next)
 
 (define-key evil-visual-state-map (kbd "C-x C-x") 'org-sm-node-extract)
 
@@ -731,61 +766,3 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 ;(defun org-sm-quick-grade-3 () (org-sm-quick-grade 3))
 ;(defun org-sm-quick-grade-4 () (org-sm-quick-grade 4))
 ;(defun org-sm-quick-grade-5 () (org-sm-quick-grade 5))
-
-
-;;; Additional functions which are expected by the go server
-(defun org-get-property-value-by-id (id property-name)
-  "Retrieve the value of PROPERTY-NAME from the :PROPERTIES: drawer
-of an Org header with the specified ID."
-  (interactive "sEnter ID: \nsEnter property name: ")
-  (let ((marker (org-id-find id 'marker)))
-    (if marker
-        (with-current-buffer (marker-buffer marker)
-          (save-excursion
-            (goto-char marker)
-            (org-back-to-heading t)
-            (let ((value (org-entry-get nil property-name)))
-              (if value
-                  (message "%s" value)
-                (message "_p: Failed to find property")))))
-      (message "_I: Failed to ID %d" id))))
-
-(defun get-org-ids-with-tag-in-directory (directory tag &optional exclude)
-  "Return a list of Org IDs of headers containing TAG in files under DIRECTORY.
-If EXCLUDE is provided, entries with the EXCLUDE tag will be ignored."
-  (interactive "DDirectory to search in: \nsTag to search for: \nsExclude tag (optional): ")
-  (let ((org-id-list '()))
-    (mapc
-     (lambda (file)
-       (with-current-buffer (find-file-noselect file)
-         (save-excursion
-           (goto-char (point-min))
-           (while (re-search-forward (format "^\\*+.*:%s:" (regexp-quote tag)) nil t)
-             (let ((tags (org-get-tags)))
-               (unless (and exclude (member exclude tags))
-                 (push (org-id-get) org-id-list)))))))
-     (directory-files-recursively directory "\\.org$"))
-    org-id-list))
-
-(defun org-id-get-first-timestamp (org-id)
-  "Return the first timestamp in the org heading or its inner text for a
-    given ORG-ID."
-  (interactive "sOrg ID: ")
-  (let ((marker (org-id-find org-id 'marker))
-        timestamp formatted-timestamp)
-    (when marker
-      (with-current-buffer (marker-buffer marker)
-        (goto-char marker)
-        (save-excursion
-          (let ((end (save-excursion (outline-next-heading) (point))))
-            (while (and (not timestamp) (or (re-search-forward org-ts-regexp end t) (re-search-forward org-ts-regexp-both end t)))
-              (setq timestamp (match-string 0))))))
-      (if timestamp
-          (progn
-            (setq formatted-timestamp (format-time-string "%Y-%m-%d %H:%M:%S" (org-time-string-to-time timestamp)))
-            (message "First timestamp: %s" formatted-timestamp)
-            formatted-timestamp)
-        (message "No timestamp found for Org ID: %s" org-id)
-        nil))))
-
-
