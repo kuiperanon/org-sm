@@ -300,6 +300,11 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
     (org-entry-put (point) "SM_ELEMENT_TYPE" type-s)
     (org-sm-node-export-at-point)))
 
+(defun org-sm-unhide-text-interactive ()
+  "This function is helpful for modifying the cloze. It reveals the full cloze markup syntax (which is normally hidden) so you can modify it."
+  (interactive)
+  (org-sm-unhide-text))
+
 (defun org-sm-capture-node-maybe-create ()
   (when-let ((type (plist-get org-capture-plist :element-type)))
     (message "org-sm-capture-node-maybe-create has been called %s" org-capture-plist)
@@ -744,6 +749,9 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 (define-key evil-normal-state-map (kbd "C-c s m") 'org-sm-read-point-set)
 (define-key evil-normal-state-map (kbd "SPC s p") 'org-sm-node-set-priority-at-point)
 (define-key evil-normal-state-map (kbd "C-c s p") 'org-sm-node-set-priority-at-point)
+(define-key evil-normal-state-map (kbd "SPC s h") 'org-sm-unhide-text-interactive)
+(define-key evil-normal-state-map (kbd "C-c s h") 'org-sm-unhide-text-interactive)
+
 
 (define-key evil-normal-state-map (kbd "SPC s r") 'org-sm-node-postpone)
 (define-key evil-normal-state-map (kbd "C-c s r") 'org-sm-node-postpone)
