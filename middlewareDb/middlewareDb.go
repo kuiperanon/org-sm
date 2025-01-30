@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"os/exec"
 	"io/ioutil"
 	"log"
 	"sort"
@@ -82,18 +81,6 @@ func HeartBeat() error {
     }
     HeartBeatRunning = true
 
-	// Verify the connection with emacs exists
-    cmd := exec.Command("emacsclient", "-e", "(+ 1 1)")
-    stdout, err := cmd.Output()
-    if err != nil {
-		err = fmt.Errorf("emacsclient ping test failed: %v", err)
-        return err
-    }
-    s := string(stdout)
-	if s[0] != '2' {
-		return fmt.Errorf("Failed to connect to emacs server")
-	}
-
 	// Confirm there's a connection here.
 	if err := anki.VerifyConnectionAndDb(); err != nil {
 		return err
@@ -108,7 +95,7 @@ func HeartBeat() error {
 	if IsLearningQueueEmpty() {
 		// TODO nocheckin :: This will continually call this over and over. Don't let this happen
 		// Process the org files and (re)generate/update the ElemInfoCache
-		err = emacs.PullDataFromOrgFiles()
+		err := emacs.PullDataFromOrgFiles()
 		if err != nil {
 			return err
 		}

@@ -111,14 +111,14 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
     (org-sm-apiclient-http-response-p
      (org-sm-apiclient-http-with-sm-server-url-do-and-parse-current "POST" "postpone"  (list (cons "days" days))))))
 
-(defun org-sm-apiclient-set-priority (id priority)
-  (unless (and (isnan priority) (>= 0.0 priority) (<= 100.0 priority))
-    (org-sm-apiclient-http-response-p
-     (org-sm-apiclient-http-with-sm-server-url-do-and-parse-current
-      "POST"
-      "set-priority"
-      (list (cons "uuid" id)
-            (cons "priority" priority))))))
+(defun org-sm-apiclient-set-priority-a-factor (id priority afactor)
+  (org-sm-apiclient-http-response-p
+   (org-sm-apiclient-http-with-sm-server-url-do-and-parse-current
+    "POST"
+    "set-priority-a-factor"
+    (list (cons "uuid" id)
+          (cons "priority" priority)
+          (cons "afactor" afactor)))))
 
 (defun org-sm-apiclient-element-create (id priority type &optional afactor)
   (org-sm-apiclient-http-response-p
@@ -218,7 +218,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
       (org-set-tags tags)
       (message "Type tags SET at point"))))
 
-(defun org-sm-node-export-at-point (&optional extract-parent-id)
+(defun org-sm-node-export-at-point (&optional extract-parent-id extract-parent-point)
   "Exports node at point to supermemo as element. If EXTRACT-PARENT-ID is non-nil, it creates an extract."
   (let ((content (buffer-substring-no-properties
                   (org-element-property :contents-begin (org-element-at-point))
@@ -232,19 +232,22 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
     (org-sm-node-set-type-tags-at-point type)
     (when extract-parent-id
       (org-entry-put (point) "SM_EXTRACT_PARENT_ID" extract-parent-id))
+    (when extract-parent-point
+      (org-entry-put (point) "SM_EXTRACT_PARENT_POINT" extract-parent-point))
     (message "Before calling org-sm-apiclient-element-create")
     (org-sm-apiclient-element-create id (float (string-to-number priority-s)) type)))
 
-(defun org-sm-node-convert-and-export-at-point (&optional extract-parent-id priority type-s force-new-id)
-  "Converts org entry at point to SM node and exports to supermemo as element"
-  ; TODO verify that you're at a valid org entry at this point
-  (let ((priority (or priority (org-sm-node-priority-read 33.3)))
-        (type-s (or type-s (call-interactively 'org-sm-node-element-type-read-s))))
-      (org-back-to-heading t)
-      (org-entry-put (point) "SM_PRIORITY" (number-to-string priority))
-      (org-entry-put (point) "SM_ELEMENT_TYPE" type-s)
-      (when force-new-id (org-id-get-create))
-      (org-sm-node-export-at-point extract-parent-id)))
+;; TODO nocheckin this is never called -- delete
+;;(defun org-sm-node-convert-and-export-at-point (&optional extract-parent-id priority type-s force-new-id)
+;;  "Converts org entry at point to SM node and exports to supermemo as element"
+;;  ; TODO verify that you're at a valid org entry at this point
+;;  (let ((priority (or priority (org-sm-node-priority-read 33.3)))
+;;        (type-s (or type-s (call-interactively 'org-sm-node-element-type-read-s))))
+;;      (org-back-to-heading t)
+;;      (org-entry-put (point) "SM_PRIORITY" (number-to-string priority))
+;;      (org-entry-put (point) "SM_ELEMENT_TYPE" type-s)
+;;      (when force-new-id (org-id-get-create))
+;;      (org-sm-node-export-at-point extract-parent-id)))
 
 (defun org-sm-capture-node-prepare-finalize-maybe-abort ()
   (when (and org-note-abort
@@ -262,28 +265,34 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
           (cloze-end (+ 1 (string-match (regexp-quote "]") (buffer-string) cloze-beg)))
           (cloze-description-end (string-match (regexp-quote "]]") (buffer-string) cloze-end)))
      (org-sm-hide-region (+ 1 cloze-beg) (+ 9 cloze-beg))
-     (org-sm-hide-region cloze-end (+ 3 cloze-description-end)))))
+    (org-sm-hide-region cloze-end (+ 3 cloze-description-end)))))
 
 (defun org-sm-node-current-element-present-as-hidden-cloze-text (id)
-  (message "hiding item cloze")
-  (widen)
-  (org-sm-unhide-text)
-  (org-sm-id-goto id)
-  (org-with-wide-buffer
-   (let* ((org-entry-beg (org-element-property :begin (org-element-at-point)))
-          (cloze-beg (string-match (regexp-quote "[[cloze:") (buffer-string) org-entry-beg))
-          (cloze-end (+ 3 (string-match (regexp-quote "]") (buffer-string) cloze-beg)))
-          (cloze-description-end (string-match (regexp-quote "]]") (buffer-string) cloze-end)))
-     (org-sm-hide-region (+ 1 cloze-beg) cloze-end)
-     (org-sm-hide-region (+ 1 cloze-description-end) (+ 3 cloze-description-end)))))
+(message "hiding item cloze")
+(widen)
+(org-sm-unhide-text)
+(org-sm-id-goto id)
+(org-with-wide-buffer
+;; Hide the cloze regions
+(let* ((org-entry-beg (org-element-property :begin (org-element-at-point)))
+        (org-entry-end (org-element-property :end (org-element-at-point)))
+        (cloze-beg (string-match (regexp-quote "[[cloze:") (buffer-string) org-entry-beg))
+        (cloze-end (+ 3 (string-match (regexp-quote "]") (buffer-string) cloze-beg)))
+        (cloze-description-end (string-match (regexp-quote "]]") (buffer-string) cloze-end)))
+    (org-sm-hide-region (+ 1 cloze-beg) cloze-end)
+    (org-sm-hide-region (+ 1 cloze-description-end) (+ 3 cloze-description-end))
+    ;; Hide headings with :hide: tag in the same active area
+    (save-excursion
+    (while (re-search-forward org-outline-regexp-bol org-entry-end t)
+        (when (member "hide" (org-get-tags))
+        (org-fold-hide-subtree)))))))
 
 (defun org-sm-capture-node-after-finalize-maybe-hide-cloze-text ()
-  ;TODO finish the docstring which describes what this is doing because it's confusing as fuck
+                                        ;TODO finish the docstring which describes what this is doing because it's confusing as fuck
   "This fun is waiting for the immediate-finish org-capture for importing items to finish so that it can zip to the item in the file buffer and set the overlays for the item."
   (when-let ((_ (and (org-capture-get :sm-import-item)
                      (org-capture-get :immediate-finish)))
              (id (org-capture-get :sm-import-id)))
-    (widen)
     (message "After sm-import capture immediate finish item finalization. Id is: %s" id)
     (org-sm-node-current-element-present-as-hidden-cloze-text id)))
 
@@ -293,12 +302,24 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 
 (defun org-sm-node-export-at-point-interactive ()
   (interactive)
-  (let ((priority-s (number-to-string (org-sm-node-priority-read 33)))
-        (type-s (call-interactively 'org-sm-node-type-read)))
-    (org-back-to-heading)
-    (org-entry-put (point) "SM_PRIORITY" priority-s)
-    (org-entry-put (point) "SM_ELEMENT_TYPE" type-s)
-    (org-sm-node-export-at-point)))
+  (org-back-to-heading)
+  (let* ((context (org-element-at-point))  ;; Get the element at point
+         (tags (org-element-property :tags context)))  ;; Extract the tags
+    (if (and tags (member "drill" tags))  ;; Check if :drill: tag is present
+        (when-let ((priority-s (or (org-entry-get (point) "SM_PRIORITY") "66.0"))
+                   (afactor-s (or (org-entry-get (point) "SM_A_FACTOR") "1.2"))
+                   (priority (string-to-number priority-s))
+                   (afactor (string-to-number afactor-s))
+                   (id (org-roam-id-at-point)))
+          (message ":drill tag found at point.")
+          (org-sm-apiclient-set-priority-a-factor id priority afactor))
+      (message "No :drill tag at point. %s" tags)
+      (let ((priority-s (number-to-string (org-sm-node-priority-read 33)))
+            (type-s (call-interactively 'org-sm-node-type-read)))
+        (org-entry-put (point) "SM_PRIORITY" priority-s)
+        (org-entry-put (point) "SM_ELEMENT_TYPE" type-s)
+        (org-sm-node-export-at-point)))))
+
 
 (defun org-sm-unhide-text-interactive ()
   "This function is helpful for modifying the cloze. It reveals the full cloze markup syntax (which is normally hidden) so you can modify it."
@@ -314,6 +335,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
                 (replace-regexp-in-string "\\(\\[\\[.*\\]\\[\\)\\(.*?\\)\\]\\]" "\\2" original-link)))
            (_ (insert original-description))
            (parent-id (plist-get org-capture-plist :sm-extract-parent-id))
+           (parent-point (plist-get org-capture-plist :sm-extract-parent-point))
            (create-under-subtree (and parent-id (plist-get org-capture-plist :sm-extract-create-under-subtree)))
            (new-id (plist-get org-capture-plist :sm-extract-new-id))
            (priority-s (plist-get org-capture-plist :priority))
@@ -330,7 +352,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
       (when original-content
         (org-with-point-at (org-element-property :contents-end (org-element-at-point))
           (insert original-content "\n")))
-      (org-sm-node-export-at-point parent-id)
+      (org-sm-node-export-at-point parent-id parent-point)
       (save-excursion
         (when create-under-subtree
           (org-cut-subtree)))
@@ -341,10 +363,12 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
             (org-paste-subtree (1+ (org-current-level)))))))))
 
 ; nocheckin
-; TODO I can modify this so that it takes the previous UUID, and replaces it....
-; TODO I kinda want to remove this feature...
-; TODO I would rather delete from the MWDB if this doesn't exist in emacs
-; TODO so then I probably want to delete this.
+; TODO I can simplify this now because there's no longer any importing from Supermemo needed
+;      And these notes may be outdated:
+    ; TODO I can modify this so that it takes the previous UUID, and replaces it....
+    ; TODO I kinda want to remove this feature...
+    ; TODO I would rather delete from the MWDB if this doesn't exist in emacs
+    ; TODO so then I probably want to delete this.
 (defun org-sm-capture-node-maybe-smimport ()
   (when-let* ((element-info (org-capture-get :sm-import-element-info))
               (type (cdr (assoc-string
@@ -383,11 +407,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
     (if-let ((id (org-capture-get :sm-import-id))
              (_ (message "Importing from sm and id is: %s" id)))
         (and (org-entry-put (point) "ID" id)
-             (setq org-sm-node-current-id id))
-      (message "TESTING, SMIMP 0 %s" (org-id-get-create))
-      (setq id (org-id-get-create))
-      (message "TESTING, SMIMP 1")
-      (org-capture-put :sm-import-id id))
+             (setq org-sm-node-current-id id)))
     (org-entry-put (point) "SM_PRIORITY" priority)
     (org-entry-put (point) "SM_ELEMENT_TYPE" (symbol-name type))))
 
@@ -399,6 +419,13 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 (add-hook 'org-capture-before-finalize-hook #'org-sm-capture-node-before-finalize-maybe-back-to-original-element)
 
 ; Add the extract templates
+;;(add-to-list 'org-capture-templates
+;;      '("z" "cloze" entry (file "~/org/extracts.org")
+;;        "* %? (cloze) \n%U\n\n" :clock-in t :clock-resume t :element-type :item))
+;;(add-to-list 'org-capture-templates
+;;      '("x" "extract" entry (file "~/org/extracts.org")
+;;        "* %? (extract) \n%U\n\n%i\n" :clock-in t :clock-resume t :element-type :topic))
+;; TODO nocheckin remove ?
 (add-to-list 'org-capture-templates
       '("z" "cloze" entry (file "~/org/extracts.org")
         "* %? (cloze) \n%U\n%a\n\n" :clock-in t :clock-resume t :element-type :item))
@@ -438,9 +465,11 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
                (current-prefix-arg- (when current-prefix-arg (car current-prefix-arg)))
                (immediate-finish (not (eq current-prefix-arg- 32)))
                (create-under-subtree (eq current-prefix-arg- 4))
-               (parent-id (let ((org-sm-node-current-id (org-sm-id-at-point-or-create)))
+               ;; nocheckin :: The problem with calling org-sm-id-at-point-or-create.. It doesn't need to do this
+               (parent-id (let ((org-sm-node-current-id (org-sm-id-at-point)))
                             (call-interactively 'org-sm-read-point-set)
                             org-sm-node-current-id))
+               (parent-point (number-to-string (org-sm-current-point-relative)))
                ;(_ (message "parent id: %s. original-id: %s" parent-id org-sm-node-current-id))
                (priority (or (org-entry-get (org-id-find parent-id t) "SM_PRIORITY") "33"))
                (_ (message "priority is %s" priority))
@@ -453,10 +482,12 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
                                       (list :sm-extract-create-under-subtree create-under-subtree)
                                       (list :sm-extract-original-current-id org-sm-node-current-id)
                                       (list :sm-extract-parent-id parent-id)
+                                      (list :sm-extract-parent-point parent-point)
                                       (list :priority priority)
                                       (when (eq current-prefix-arg- 16) (list :ask-priority t))))
                             org-capture-templates)
-                  org-capture-templates)))
+                  org-capture-templates))
+               )
           (org-capture nil "x"))))
     (deactivate-mark)))
 
@@ -474,7 +505,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
                (current-prefix-arg- (when current-prefix-arg (car current-prefix-arg)))
                (immediate-finish (not (eq current-prefix-arg- 32)))
                (create-under-subtree (eq current-prefix-arg- 4))
-               (parent-id (let ((org-sm-node-current-id (org-sm-id-at-point-or-create)))
+               (parent-id (let ((org-sm-node-current-id (org-sm-id-at-point)))
                             (call-interactively 'org-sm-read-point-set)
                             org-sm-node-current-id))
                ;(_ (message "parent id: %s. original-id: %s" parent-id org-sm-node-current-id))
@@ -525,13 +556,14 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
     (org-show-context)
     t))
 
-(defun org-sm-node-set-priority-at-point ()
-  (interactive)
-  (let* ((id (org-roam-id-at-point))
-         (current-priority (string-to-number (org-entry-get (point) "SM_PRIORITY")))
-         (priority (org-sm-node-priority-read current-priority)))
-    (org-entry-put (point) "SM_PRIORITY" (number-to-string priority))
-    (org-sm-apiclient-set-priority id (float priority))))
+;; TODO nocheckin remove
+;;(defun org-sm-node-set-priority-at-point ()
+;;  (interactive)
+;;  (let* ((id (org-roam-id-at-point))
+;;         (current-priority (string-to-number (org-entry-get (point) "SM_PRIORITY")))
+;;         (priority (org-sm-node-priority-read current-priority)))
+;;    (org-entry-put (point) "SM_PRIORITY" (number-to-string priority))
+;;    (org-sm-apiclient-set-priority id (float priority))))
 
 (defun org-sm-goto-current ()
   "Go to current element in emacs. Send org-sm-goto-next if current element is graded item."
@@ -588,7 +620,7 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
         ;; Find the entry with the specified ID
         (org-id-goto entry-id)
         (let ((sm-a-factor (or (org-entry-get (point) "SM_A_FACTOR") "1.2"))
-              (sm-interval (org-entry-get (point) "SM_INTERVAL"))
+              (sm-interval (or (org-entry-get (point) "SM_INTERVAL") "1.0"))
               (today (format-time-string "[%Y-%m-%d %a %H:%M]")))
           (when (and sm-a-factor sm-interval)
             ;; Update SM_LAST_REVIEW with today's date
@@ -600,24 +632,60 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
               ;; Update SM_INTERVAL
               (org-entry-put (point) "SM_INTERVAL" (number-to-string new-interval)))))))))
 
+
+(defun org-sm-id-at-point ()
+  "Find the nearest element (including the current one) with the tag 'drill' and return its ID."
+  (save-excursion
+    (let ((nearest-ancestor nil))
+      ;; Check the current element first
+      (when (and (member "drill" (org-get-tags nil t))  ; Check for 'drill' tag in current element
+                 (org-id-get))                   ; Check for ID in current element
+        (setq nearest-ancestor (org-id-get)))
+      ;; Traverse ancestors if no match was found
+      (while (and (not nearest-ancestor) (org-up-heading-safe))
+        (when (and (member "drill" (org-get-tags nil t))  ; Check for 'drill' tag in ancestor
+                  (org-id-get))                   ; Check for ID in ancestor
+          (setq nearest-ancestor (org-id-get))))
+      ;; Display the result
+      (if nearest-ancestor
+          (message "SUCCESS: Nearest element with tag 'drill' has ID: %s" nearest-ancestor)
+        (message "No element or ancestor with tag 'drill' found"))
+      nearest-ancestor)))
+
+
 (defun org-sm-read-point-goto ()
+  "Goto the relative point stored in the 'SM_POINT' property of the element with the 'drill' tag and ID."
   (interactive)
-  (when org-sm-node-current-id
-    (org-sm-id-goto org-sm-node-current-id)
-    (bookmark-jump (concat "sm-" org-sm-node-current-id))))
+  (when-let ((id (org-sm-id-at-point)))
+    (let ((entry-pos (org-entry-get (org-id-find id t) "SM_POINT")))
+      (if entry-pos
+          (let ((heading-pos (org-get-heading-position id)))
+            (goto-char (+ heading-pos (string-to-number entry-pos))))
+        (message "No point saved for this element with ID: %s." id)))))
 
 (defun org-sm-read-point-set ()
+  "Set the relative point in the 'SM_POINT' property of the element with the 'drill' tag and ID."
   (interactive)
-  (when-let* ((id org-sm-node-current-id)
-             (bmark-name (concat "sm-" id))
-             (pos (point))
-             (buffer (if (string-prefix-p "CAPTURE-" (buffer-name))
-                         (org-capture-get :buffer)
-                       (current-buffer))))
-    (with-current-buffer buffer
-      (save-excursion
-        (goto-char pos)
-        (bookmark-set bmark-name)))))
+  (when-let* ((id (org-sm-id-at-point))
+              (pos (point)))
+    (let ((entry (org-id-find id t)))
+      (when entry
+        (let ((heading-pos (org-get-heading-position id))) ;; Get the position of the heading
+          (org-entry-put entry "SM_POINT" (number-to-string (- pos heading-pos))) ;; Save the relative point
+          (message "Saved relative point %d (relative to heading) in 'SM_POINT' property for entry with ID: %s" (- pos heading-pos) id))))))
+
+(defun org-sm-current-point-relative ()
+  "Return the current point relative to the heading with the 'drill' tag and ID."
+  (when-let ((id (org-sm-id-at-point)))
+    (let ((heading-pos (org-get-heading-position id))) ;; Get the heading position
+      (- (point) heading-pos)))) ;; Return the relative position
+
+(defun org-get-heading-position (id)
+  "Return the position of the heading with the given ID."
+  (save-excursion
+    (org-id-goto id)
+    (line-beginning-position)))
+
 
 (setplist 'org-sm-hidden-text-overlay
           '(invisible t))
@@ -678,8 +746,11 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
                                   (when sm-element-id (list :sm-import-id sm-element-id))))
                         org-capture-templates)))
       (org-capture nil "s"))
-    (when (and itemp (not should-import))
-      (org-sm-node-current-element-present-as-hidden-cloze-text sm-element-id))))
+    (if (and itemp (not should-import))
+        (progn
+          (org-sm-node-show-at-current) ;; Show all first
+          (org-sm-node-current-element-present-as-hidden-cloze-text sm-element-id))
+      (org-sm-node-show-at-current))))
 
 (defun org-sm-maybe-capture-buffer-finalize ()
   "If buffer at point is a capture buffer, finalize it."
@@ -693,6 +764,33 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
   ;      (outline-show-entry)
   ;    (outline-show-all))))
 
+(defun org-sm-goto-parent ()
+  "Go to the parent element based on the 'SM_EXTRACT_PARENT_POINT' and 'SM_EXTRACT_PARENT_ID' properties."
+  (interactive)
+  (when-let ((id (org-sm-id-at-point)))  ;; Get the ID of the element at the point with the 'drill' tag
+    (let ((parent-id (org-entry-get (org-id-find id t) "SM_EXTRACT_PARENT_ID"))
+          (parent-point (org-entry-get (org-id-find id t) "SM_EXTRACT_PARENT_POINT")))
+      (when parent-id
+        (widen)
+        (org-sm-id-goto parent-id)  ;; Go to the parent element by ID
+        (when parent-point
+          (let ((heading-pos (org-get-heading-position parent-id)))
+            ;; Move to the relative position stored in 'SM_EXTRACT_PARENT_POINT'
+            (goto-char (+ heading-pos (string-to-number parent-point)))))))))
+
+; nocheckin remove
+;;(defun org-sm-goto-parent ()
+;;  (interactive)
+;;  (let ((parent-point (org-entry-get (point) "SM_EXTRACT_PARENT_POINT")))
+;;    (when-let ((id (org-entry-get (point) "SM_EXTRACT_PARENT_ID")))
+;;      (widen)
+;;      (org-sm-id-goto id)
+;;      ;; Now go to the parent-point -- nocheckin
+;;      (when parent-point
+;;          (let ((heading-pos (org-get-heading-position id)))
+;;            (goto-char (+ heading-pos (string-to-number parent-point))))))))
+
+
 (org-link-set-parameters
  "cloze"
  :follow (lambda (path) (message "You clicked me."))
@@ -704,8 +802,6 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 (add-hook 'org-after-todo-state-change-hook 'org-sm-node-maybe-dismiss-at-point 'append)
 (advice-add 'org-sm-goto-next :before #'org-sm-maybe-capture-buffer-finalize)
 (advice-add 'org-sm-node-goto-element-id-or-smimport :after #'org-narrow-to-subtree)
-;(advice-add 'org-sm-node-goto-element-id-or-smimport :after #'outline-show-all)
-(advice-add 'org-sm-node-goto-element-id-or-smimport :after #'org-sm-node-show-at-current)
 (advice-add 'org-sm-node-extract :after #'outline-show-all)
 (advice-add 'org-sm-read-point-goto :before #'org-sm-unhide-text)
 ;NEXT Make an advice that clocks in next supermemo elements
@@ -745,13 +841,19 @@ ENTITY is a list, is default empty. Headers is default '((\"Content-Type\" . \"a
 (define-key evil-normal-state-map (kbd "C-c s e") 'org-sm-node-export-at-point-interactive)
 (define-key evil-normal-state-map (kbd "SPC s g") 'org-sm-read-point-goto)
 (define-key evil-normal-state-map (kbd "C-c s g") 'org-sm-read-point-goto)
+(define-key evil-normal-state-map (kbd "SPC g") 'org-sm-read-point-goto)
+(define-key evil-normal-state-map (kbd "C-c g") 'org-sm-read-point-goto)
 (define-key evil-normal-state-map (kbd "SPC s m") 'org-sm-read-point-set)
 (define-key evil-normal-state-map (kbd "C-c s m") 'org-sm-read-point-set)
-(define-key evil-normal-state-map (kbd "SPC s p") 'org-sm-node-set-priority-at-point)
-(define-key evil-normal-state-map (kbd "C-c s p") 'org-sm-node-set-priority-at-point)
+(define-key evil-normal-state-map (kbd "C-c m") 'org-sm-read-point-set)
+(define-key evil-normal-state-map (kbd "SPC m") 'org-sm-read-point-set)
+; TODO nocheckin instead of this we're going to overload the =C-c s e= command
+;(define-key evil-normal-state-map (kbd "SPC s p") 'org-sm-node-set-priority-at-point)
+;(define-key evil-normal-state-map (kbd "C-c s p") 'org-sm-node-set-priority-at-point)
 (define-key evil-normal-state-map (kbd "SPC s h") 'org-sm-unhide-text-interactive)
 (define-key evil-normal-state-map (kbd "C-c s h") 'org-sm-unhide-text-interactive)
-
+(define-key evil-normal-state-map (kbd "SPC s p") 'org-sm-goto-parent)
+(define-key evil-normal-state-map (kbd "C-c s p") 'org-sm-goto-parent)
 
 (define-key evil-normal-state-map (kbd "SPC s r") 'org-sm-node-postpone)
 (define-key evil-normal-state-map (kbd "C-c s r") 'org-sm-node-postpone)

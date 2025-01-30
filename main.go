@@ -38,9 +38,10 @@ type PayloadDismiss struct {
     Uuid string `json:"uuid"`
 }
 
-type PayloadSetPriority struct {
+type PayloadSetPriorityAFactor struct {
 	Uuid     string  `json:"uuid"`
     Priority float64 `json:"priority"`
+    AFactor  float64 `json:"afactor"`
 }
 
 type PayloadNewItem struct {
@@ -134,15 +135,15 @@ func main() {
 			fmt.Println("LQ: ", middlewareDb.LearningQueue())
             w.Write([]byte("{\"result\":\"true\"}"))
 		})
-        register("/set-priority", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("\n/set-priority TODO !!!")
+        register("/set-priority-a-factor", func(w http.ResponseWriter, r *http.Request) {
+			fmt.Println("\n/set-priority-a-factor ")
             body, err := io.ReadAll(r.Body)
             if err != nil {
                 http.Error(w, "Unable to read body", http.StatusBadRequest)
                 return // TODO why do i stop the server here? not robust
             }
             defer r.Body.Close()
-            var payload PayloadSetPriority
+            var payload PayloadSetPriorityAFactor
             if err := json.Unmarshal(body, &payload); err != nil {
                 http.Error(w, "Unable to parse JSON", http.StatusBadRequest)
                 return
@@ -157,7 +158,8 @@ func main() {
 				log.Fatal("Called set-priority for uuid that doesn't exist in MIDDLEWAREDB. uid=", payload)
 			}
 			elemInfo.Priority = int(payload.Priority) // TODO: confirm this is within a valid range?
-			fmt.Println("Setting priority: new ei= ", elemInfo)
+			elemInfo.AFactor  = float64(payload.AFactor)  //
+			fmt.Println("Setting priority and a-factor: new ei= ", elemInfo)
 			middlewareDb.Persist(elemInfo)
 
             w.Write([]byte("{\"result\":\"true\"}"))
@@ -191,6 +193,7 @@ func main() {
         register("/element-info", func(w http.ResponseWriter, r *http.Request) {
 			fmt.Println("\n/element-info")
 			ei, err := middlewareDb.CurrentElement()
+			fmt.Println(ei)
 			if err != nil {
 				log.Fatal("Error in /element-info: ", err)
 			}
